@@ -15,8 +15,8 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN') or '<PUT_YOUR_TOKEN_HERE>'
-POPPLER_PATH = os.environ.get('POPPLER_PATH')
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+POPPLER_PATH = os.environ.get('POPPLER_PATH', '/usr/bin')
 
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
     try:
@@ -110,14 +110,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('سلام! فایل PDF یا عکس بفرست تا متنش رو برات استخراج کنم.')
 
 def main():
-    if BOT_TOKEN == '<PUT_YOUR_TOKEN_HERE>' or not BOT_TOKEN:
+    if not BOT_TOKEN:
         raise RuntimeError('BOT_TOKEN environment variable not set.')
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler('start', start_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_document))
-
     logger.info('Bot started (polling)...')
     app.run_polling()
 
