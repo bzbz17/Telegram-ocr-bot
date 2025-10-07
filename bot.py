@@ -36,7 +36,7 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
         return ""
 
 
-# OCR برای PDF (زمانی که متن دیجیتال ندارد)
+# OCR برای PDF
 def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
@@ -98,13 +98,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text('⚠️ متنی پیدا نشد یا کیفیت پایین بود.')
             return
 
-        # ذخیره فایل متنی با محتوا واقعی
+        # 🔹 ذخیره متن واقعی در فایل txt
         txt_filename = Path(file_name).stem + '.txt'
         out_txt = os.path.join(tmp_dir, txt_filename)
         with open(out_txt, 'w', encoding='utf-8') as f:
-            f.write(text)
+            f.write(text)  # ⚠️ اینجا متن واقعی ذخیره می‌شود
 
-        # ارسال فایل با اسم درست
+        # 🔹 ارسال فایل با اسم درست و بدون پیش‌نمایش
         await message.reply_document(
             document=InputFile(out_txt, filename=txt_filename),
             filename=txt_filename,
@@ -124,7 +124,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-# فرمان شروع
+# فرمان استارت
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         'سلام 👋\n'
