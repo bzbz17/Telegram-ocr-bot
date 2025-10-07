@@ -12,16 +12,16 @@ import fitz  # PyMuPDF
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# 🔧 تنظیمات لاگ
+# تنظیمات لاگ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 متغیرهای محیطی
+# متغیرهای محیطی
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 POPPLER_PATH = os.environ.get('POPPLER_PATH', '/usr/bin')
 
 
-# 🧩 استخراج متن دیجیتال از PDF
+# استخراج متن دیجیتال از PDF
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
     try:
         text_chunks = []
@@ -36,7 +36,7 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
         return ""
 
 
-# 🔍 OCR برای PDF (زمانی که متن دیجیتال نداره)
+# OCR برای PDF (زمانی که متن دیجیتال ندارد)
 def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
@@ -51,7 +51,7 @@ def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     return "\n\n".join(texts).strip()
 
 
-# 🖼️ OCR برای عکس‌ها
+# OCR برای عکس‌ها
 def ocr_image_to_text(image_path: str) -> str:
     try:
         img = Image.open(image_path)
@@ -61,7 +61,7 @@ def ocr_image_to_text(image_path: str) -> str:
         return ""
 
 
-# 📤 هندل فایل‌ها
+# هندل فایل‌ها
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
@@ -98,22 +98,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text('⚠️ متنی پیدا نشد یا کیفیت پایین بود.')
             return
 
-        # ذخیره فایل متنی
-        out_txt = os.path.join(tmp_dir, Path(file_name).stem + '.txt')
+        # ذخیره فایل متنی با محتوا واقعی
+        txt_filename = Path(file_name).stem + '.txt'
+        out_txt = os.path.join(tmp_dir, txt_filename)
         with open(out_txt, 'w', encoding='utf-8') as f:
             f.write(text)
 
-        # بخشی از متن رو مستقیم در چت نشون بده (تا 1000 کاراکتر)
-        preview = text[:1000]
-        if len(text) > 1000:
-            preview += "\n\n... (بقیه متن در فایل .txt)"
-
-        await message.reply_text(f"📝 بخش‌هایی از متن استخراج‌شده:\n\n{preview}")
-
-        # ارسال فایل کامل
+        # ارسال فایل با اسم درست
         await message.reply_document(
-            document=InputFile(out_txt, filename=Path(out_txt).name),
-            filename=Path(out_txt).name,
+            document=InputFile(out_txt, filename=txt_filename),
+            filename=txt_filename,
             caption="📎 فایل کامل متن استخراج‌شده"
         )
 
@@ -130,16 +124,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-# 🚀 فرمان شروع
+# فرمان شروع
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         'سلام 👋\n'
-        'فقط کافیه فایل PDF یا عکس بفرستی تا متنش رو برات استخراج کنم 📄✨\n'
+        'فایل PDF یا عکس بفرست تا متنش رو برات استخراج کنم 📄✨\n'
         'پشتیبانی از فارسی و انگلیسی ✅'
     )
 
 
-# ▶️ اجرای ربات
+# اجرای ربات
 def main():
     if not BOT_TOKEN:
         raise RuntimeError('BOT_TOKEN environment variable not set.')
