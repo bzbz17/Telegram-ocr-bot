@@ -12,12 +12,16 @@ import fitz  # PyMuPDF
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
+# 🔧 تنظیمات لاگ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 🔑 متغیرهای محیطی
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 POPPLER_PATH = os.environ.get('POPPLER_PATH', '/usr/bin')
 
+
+# 🧩 استخراج متن دیجیتال از PDF
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
     try:
         text_chunks = []
@@ -31,7 +35,9 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
         logger.exception("Error reading PDF with PyMuPDF: %s", e)
         return ""
 
-def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str]=None) -> str:
+
+# 🔍 OCR برای PDF (زمانی که متن دیجیتال نداره)
+def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
     except Exception as e:
@@ -44,6 +50,8 @@ def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str]=None) -> str:
         texts.append(text)
     return "\n\n".join(texts).strip()
 
+
+# 🖼️ OCR برای عکس‌ها
 def ocr_image_to_text(image_path: str) -> str:
     try:
         img = Image.open(image_path)
@@ -52,6 +60,8 @@ def ocr_image_to_text(image_path: str) -> str:
         logger.exception("Error running OCR on image: %s", e)
         return ""
 
+
+# 📤 هندل فایل‌ها
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
@@ -65,7 +75,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = photo.file_id
         file_name = f'photo_{photo.file_unique_id}.jpg'
     else:
-        await message.reply_text('لطفا یک فایل PDF یا عکس ارسال کنید.')
+        await message.reply_text('لطفاً یک فایل PDF یا عکس ارسال کنید.')
         return
 
     tmp_dir = tempfile.mkdtemp()
@@ -75,29 +85,42 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(custom_path=local_path)
 
         if file_name.lower().endswith('.pdf'):
-            await message.reply_text('فایل PDF دریافت شد؛ در حال استخراج متن...')
+            await message.reply_text('📄 فایل PDF دریافت شد؛ در حال استخراج متن...')
             text = extract_text_from_pdf_digital(local_path)
             if not text.strip():
-                await message.reply_text('متن دیجیتال پیدا نشد؛ اجرای OCR...')
+                await message.reply_text('متن دیجیتال پیدا نشد؛ در حال اجرای OCR...')
                 text = ocr_pdf_to_text(local_path, poppler_path=POPPLER_PATH)
         else:
-            await message.reply_text('عکس دریافت شد؛ اجرای OCR...')
+            await message.reply_text('🖼️ عکس دریافت شد؛ در حال اجرای OCR...')
             text = ocr_image_to_text(local_path)
 
         if not text.strip():
-            await message.reply_text('متنی پیدا نشد یا کیفیت پایین بود.')
+            await message.reply_text('⚠️ متنی پیدا نشد یا کیفیت پایین بود.')
             return
 
+        # ذخیره فایل متنی
         out_txt = os.path.join(tmp_dir, Path(file_name).stem + '.txt')
         with open(out_txt, 'w', encoding='utf-8') as f:
             f.write(text)
 
-        await message.reply_text('متن استخراج شد؛ فایل TXT آماده است:')
-        await message.reply_document(document=InputFile(out_txt), filename=Path(out_txt).name)
+        # بخشی از متن رو مستقیم در چت نشون بده (تا 1000 کاراکتر)
+        preview = text[:1000]
+        if len(text) > 1000:
+            preview += "\n\n... (بقیه متن در فایل .txt)"
+
+        await message.reply_text(f"📝 بخش‌هایی از متن استخراج‌شده:\n\n{preview}")
+
+        # ارسال فایل کامل
+        await message.reply_document(
+            document=InputFile(out_txt, filename=Path(out_txt).name),
+            filename=Path(out_txt).name,
+            caption="📎 فایل کامل متن استخراج‌شده"
+        )
 
     except Exception as e:
         logger.exception('Error handling document: %s', e)
-        await message.reply_text('خطا در پردازش فایل: ' + str(e))
+        await message.reply_text(f'⚠️ خطا در پردازش فایل: {str(e)}')
+
     finally:
         try:
             for p in Path(tmp_dir).glob('*'):
@@ -106,9 +129,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('سلام! فایل PDF یا عکس بفرست تا متنش رو برات استخراج کنم.')
 
+# 🚀 فرمان شروع
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        'سلام 👋\n'
+        'فقط کافیه فایل PDF یا عکس بفرستی تا متنش رو برات استخراج کنم 📄✨\n'
+        'پشتیبانی از فارسی و انگلیسی ✅'
+    )
+
+
+# ▶️ اجرای ربات
 def main():
     if not BOT_TOKEN:
         raise RuntimeError('BOT_TOKEN environment variable not set.')
@@ -116,8 +147,9 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler('start', start_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_document))
-    logger.info('Bot started (polling)...')
+    logger.info('🤖 Bot started (polling)...')
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
