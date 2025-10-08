@@ -9,6 +9,7 @@ import pytesseract
 from PIL import Image
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
+from docx import Document
 
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
@@ -120,20 +121,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
             return
 
-        txt_name = Path(file_name).stem + ".txt"
-        txt_path = os.path.join(tmp_dir, txt_name)
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(text)
+        docx_name = Path(file_name).stem + ".docx"
+        docx_path = os.path.join(tmp_dir, docx_name)
+
+        document = Document()
+        document.add_paragraph(text)
+        document.save(docx_path)
 
         preview = text[:500]
         if len(text) > 500:
-            preview += "\n\n📄 ادامه متن در فایل ضمیمه است..."
+            preview += "\n\n📄 ادامه متن در فایل Word ضمیمه است..."
 
         await message.reply_text(f"📝 پیش‌نمایش متن:\n\n{preview}")
 
         await message.reply_document(
-            document=InputFile(txt_path, filename=txt_name),
-            caption="📎 فایل متنی استخراج‌شده آماده است ✅"
+            document=InputFile(docx_path, filename=docx_name),
+            caption="📎 فایل Word استخراج‌شده آماده است ✅"
         )
 
     except Exception as e:
@@ -153,7 +156,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
         "من ربات استخراج متن هوشمند هستم.\n\n"
-        "📄 فایل PDF یا عکس بفرست تا متن فارسی یا انگلیسی‌شو برات تشخیص بدم و استخراج کنم."
+        "📄 فایل PDF یا عکس بفرست تا متن فارسی یا انگلیسی‌شو برات تشخیص بدم و داخل فایل Word ذخیره کنم."
     )
 
 
