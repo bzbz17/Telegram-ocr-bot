@@ -41,9 +41,9 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
     try:
         with fitz.open(pdf_path) as doc:
             for page in doc:
-                txt = page.get_text("text").strip()
-                if txt:
-                    text_result.append(txt)
+                txt = page.get_text("text")
+                if txt and isinstance(txt, str):
+                    text_result.append(txt.strip())
     except Exception as e:
         logger.error(f"PDF text extraction error: {e}")
     return "\n".join(text_result).strip()
@@ -59,9 +59,9 @@ def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     texts = []
     for img in images:
         lang = detect_language_from_image(img)
-        t = pytesseract.image_to_string(img, lang=lang).strip()
-        if t:
-            texts.append(t)
+        t = pytesseract.image_to_string(img, lang=lang)
+        if t and isinstance(t, str):
+            texts.append(t.strip())
     return "\n\n".join(texts).strip()
 
 
@@ -69,7 +69,10 @@ def ocr_image_to_text(image_path: str) -> str:
     try:
         img = Image.open(image_path)
         lang = detect_language_from_image(img)
-        return pytesseract.image_to_string(img, lang=lang).strip()
+        text = pytesseract.image_to_string(img, lang=lang)
+        if text and isinstance(text, str):
+            return text.strip()
+        return ""
     except Exception as e:
         logger.error(f"OCR image error: {e}")
         return ""
@@ -111,9 +114,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("🖼️ در حال اجرای OCR روی تصویر (با تشخیص زبان)...")
             text = ocr_image_to_text(local_path)
 
-        logger.info(f"Extracted text preview: {text[:100]}")
+        logger.info(f"🔍 مقدار نهایی text:\n{text[:100]}")
 
-        if not text:
+        if not text or not isinstance(text, str):
             await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
             return
 
