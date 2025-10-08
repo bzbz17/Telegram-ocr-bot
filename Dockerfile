@@ -7,15 +7,10 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     build-essential \
     libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . /app
-RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 ENV POPPLER_PATH=/usr/bin
