@@ -9,7 +9,6 @@ import pytesseract
 from PIL import Image
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
-from docx import Document
 
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
@@ -22,8 +21,10 @@ POPPLER_PATH = os.environ.get('POPPLER_PATH', '/usr/bin')
 
 
 def detect_language_from_image(image: Image.Image) -> str:
+    """تشخیص زبان غالب از تصویر با استفاده از کاراکترهای فارسی"""
     try:
         preview_text = pytesseract.image_to_string(image, lang="fas+eng", config="--psm 6")
+        # اگر حروف فارسی زیاد باشه، فارسی رو اولویت بده
         persian_chars = len(re.findall(r'[\u0600-\u06FF]', preview_text))
         english_chars = len(re.findall(r'[A-Za-z]', preview_text))
         if persian_chars > english_chars * 1.5:
@@ -38,19 +39,21 @@ def detect_language_from_image(image: Image.Image) -> str:
 
 
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
+    """استخراج متن دیجیتال از PDF"""
     text_result = []
     try:
         with fitz.open(pdf_path) as doc:
             for page in doc:
                 txt = page.get_text("text")
-                if txt and isinstance(txt, str):
-                    text_result.append(txt.strip())
+                if txt:
+                    text_result.append(txt)
     except Exception as e:
         logger.error(f"PDF text extraction error: {e}")
     return "\n".join(text_result).strip()
 
 
 def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
+    """استخراج متن از PDF اسکن‌شده با OCR و تشخیص خودکار زبان"""
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
     except Exception as e:
@@ -61,19 +64,16 @@ def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     for img in images:
         lang = detect_language_from_image(img)
         t = pytesseract.image_to_string(img, lang=lang)
-        if t and isinstance(t, str):
-            texts.append(t.strip())
+        texts.append(t)
     return "\n\n".join(texts).strip()
 
 
 def ocr_image_to_text(image_path: str) -> str:
+    """استخراج متن از عکس با تشخیص خودکار زبان"""
     try:
         img = Image.open(image_path)
         lang = detect_language_from_image(img)
-        text = pytesseract.image_to_string(img, lang=lang)
-        if text and isinstance(text, str):
-            return text.strip()
-        return ""
+        return pytesseract.image_to_string(img, lang=lang).strip()
     except Exception as e:
         logger.error(f"OCR image error: {e}")
         return ""
@@ -105,38 +105,38 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         telegram_file = await context.bot.get_file(file_id)
         await telegram_file.download_to_drive(custom_path=local_path)
 
+        # تشخیص نوع فایل
         if file_name.lower().endswith(".pdf"):
             await message.reply_text("📑 در حال استخراج متن از PDF ...")
             text = extract_text_from_pdf_digital(local_path)
-            if not text:
+            if not text.strip():
                 await message.reply_text("🔍 متن دیجیتال یافت نشد، اجرای OCR با تشخیص زبان ...")
                 text = ocr_pdf_to_text(local_path, poppler_path=POPPLER_PATH)
         else:
             await message.reply_text("🖼️ در حال اجرای OCR روی تصویر (با تشخیص زبان)...")
             text = ocr_image_to_text(local_path)
 
-        logger.info(f"🔍 مقدار نهایی text:\n{text[:100]}")
-
-        if not text or not isinstance(text, str):
+        if not text.strip():
             await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
             return
 
-        docx_name = Path(file_name).stem + ".docx"
-        docx_path = os.path.join(tmp_dir, docx_name)
+        # ✅ نوشتن متن در فایل
+        txt_name = Path(file_name).stem + ".txt"
+        txt_path = os.path.join(tmp_dir, txt_name)
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(text)
 
-        document = Document()
-        document.add_paragraph(text)
-        document.save(docx_path)
-
+        # ✨ پیش‌نمایش چند خط اول متن
         preview = text[:500]
         if len(text) > 500:
-            preview += "\n\n📄 ادامه متن در فایل Word ضمیمه است..."
+            preview += "\n\n📄 ادامه متن در فایل ضمیمه است..."
 
         await message.reply_text(f"📝 پیش‌نمایش متن:\n\n{preview}")
 
+        # ارسال فایل txt
         await message.reply_document(
-            document=InputFile(docx_path, filename=docx_name),
-            caption="📎 فایل Word استخراج‌شده آماده است ✅"
+            document=InputFile(txt_path, filename=txt_name),
+            caption="📎 فایل متنی استخراج‌شده آماده است ✅"
         )
 
     except Exception as e:
@@ -156,7 +156,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
         "من ربات استخراج متن هوشمند هستم.\n\n"
-        "📄 فایل PDF یا عکس بفرست تا متن فارسی یا انگلیسی‌شو برات تشخیص بدم و داخل فایل Word ذخیره کنم."
+        "📄 فایل PDF یا عکس بفرست تا متن فارسی یا انگلیسی‌شو برات تشخیص بدم و استخراج کنم."
     )
 
 
