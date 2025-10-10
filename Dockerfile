@@ -6,13 +6,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
 
-# ---------- مرحله ۳: نصب وابستگی‌های سیستم ----------
+# ---------- مرحله ۳: نصب ابزارهای OCR و وابستگی‌ها ----------
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-fas \
     tesseract-ocr-eng \
     poppler-utils \
     ghostscript \
+    supervisor \
     libtesseract-dev \
     libgl1 \
     libglib2.0-0 \
@@ -21,7 +22,6 @@ RUN apt-get update && apt-get install -y \
     fonts-hosny-amiri \
     fonts-noto-cjk \
     fonts-noto-unhinted \
-    fonts-dejavu-core \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------- مرحله ۴: مسیر کاری ----------
@@ -35,11 +35,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ---------- مرحله ۶: کپی سورس کد ----------
 COPY . .
 
-# ---------- مرحله ۷: تنظیم محیط برای سرعت بالاتر OCR ----------
-# PSM 6 برای تشخیص خطوط معمولی، OEM 3 برای حالت ترکیبی بهترین کیفیت
+# ---------- مرحله ۷: تنظیم محیط برای سرعت بالا ----------
 ENV TESSERACT_OEM=3
 ENV TESSERACT_PSM=6
 ENV OCR_THREADS=4
 
-# ---------- مرحله ۸: اجرای ربات ----------
-CMD ["python", "bot.py"]
+# ---------- مرحله ۸: تنظیم supervisord برای مانیتورینگ و ری‌استارت خودکار ----------
+RUN mkdir -p /var/log/supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# ---------- مرحله ۹: اجرای supervisord ----------
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
