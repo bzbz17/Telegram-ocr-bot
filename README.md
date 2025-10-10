@@ -1,23 +1,18 @@
-# Telegram OCR Bot (Render Version)
+# Telegram OCR Bot 🤖
+این ربات تلگرام متون فارسی و انگلیسی را از PDF و عکس استخراج می‌کند.
 
-این ربات فایل‌های PDF و عکس رو می‌گیره و متنش رو به صورت `.txt` برمی‌گردونه.
-از OCR فارسی و انگلیسی پشتیبانی می‌کنه.
+## ویژگی‌ها
+- پشتیبانی از PDF دیجیتال و اسکن‌شده
+- OCR فارسی و انگلیسی با دقت بالا
+- اجرای پایدار با Supervisor در Render
+- خروجی مستقیم در چت (بدون نیاز به فایل txt)
 
----
-
-## 🚀 اجرای پروژه در Render
-
-1. وارد [render.com](https://render.com) شو.
-2. New → Web Service رو بزن.
-3. ریپوی GitHub خودت رو انتخاب کن.
-4. محیط رو روی **Docker** بذار.
-5. توی Environment Variable‌ها مقدار زیر رو وارد کن:
-
-| Name | Value |
-|------|--------|
-| BOT_TOKEN | توکن ربات تلگرام از BotFather |
-| POPPLER_PATH | /usr/bin |
-
-6. Deploy رو بزن ✅
-
-بعد از اتمام Deploy، ربات به‌صورت خودکار روشن میشه.
+## نصب
+1. این ریپو را در گیت‌هاب خود کلون کنید.
+2. در سایت Render، گزینه "New + Web Service" را بزنید.
+3. ریپوی خود را انتخاب کنید.
+4. تنظیمات:
+   - Environment: `Docker`
+   - Environment Variables:
+     - `BOT_TOKEN` = توکن ربات تلگرام
+5. Deploy کنید 🚀
