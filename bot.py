@@ -1,173 +1,191 @@
+# =====================================================
+# 📄 bot.py — نسخه نهایی با دقت بالا برای فارسی، عربی و انگلیسی
+# شامل بهینه‌سازی OCR برای فونت‌های فارسی، نستعلیق و خطوط اسکن‌شده
+# و کنترل هوشمند سرعت OCR چندنخی
+# =====================================================
+
 import os
 import tempfile
 import logging
 import re
+import asyncio
+import math
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-
-# ──────────────────────────────────────────────
-# 📜 پیکربندی اولیه و تنظیمات کلی
-# ──────────────────────────────────────────────
-
+# -----------------------
+# تنظیمات لاگینگ
+# -----------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POPPLER_PATH = os.environ.get("POPPLER_PATH", "/usr/bin")
 
-# برای اجرای سریع‌تر OCR به‌صورت موازی
-executor = ThreadPoolExecutor(max_workers=4)
+# تعداد نخ‌ها برای OCR چندصفحه‌ای
+MAX_WORKERS = int(os.environ.get("OCR_MAX_WORKERS", "4"))
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+# پیکربندی پایه OCR
+OCR_CONFIG = "--oem 3 --psm 6 -c preserve_interword_spaces=1"
 
 
-# ──────────────────────────────────────────────
-# 🧩 توابع بهینه‌سازی تصویر قبل از OCR
-# ──────────────────────────────────────────────
-
-def preprocess_image(img: Image.Image) -> Image.Image:
+# -----------------------
+# 🎨 پیش‌پردازش هوشمند تصویر
+# -----------------------
+def preprocess_pil_image(img: Image.Image) -> Image.Image:
     """
-    🔹 قبل از OCR، تصویر را بهینه می‌کند تا تشخیص متن دقیق‌تر انجام شود.
-    - افزایش وضوح و کنتراست
-    - تبدیل به سیاه‌وسفید
-    - حذف نویز
+    پردازش هوشمند تصویر:
+    - تنظیم روشنایی و کنتراست بر اساس نوع فونت
+    - تشخیص تراکم خطوط برای فونت نستعلیق یا نازک
+    - استفاده از فیلترهای نویز متفاوت بسته به نوع تصویر
     """
     try:
-        img = img.convert("L")  # به خاکستری
-        img = img.filter(ImageFilter.MedianFilter())  # حذف نویز
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2)  # افزایش کنتراست
+        img = img.convert("L")
+        w, h = img.size
+        ratio = h / w
+
+        # 🔹 اگر تصویر خیلی کوچک بود، بزرگش کن برای دقت بیشتر OCR
+        if w < 1400:
+            scale = 1400 / w
+            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
+
+        # 🔹 بررسی تراکم پیکسل‌ها برای تشخیص نوع فونت
+        pixels = list(img.getdata())
+        darkness = sum(1 for p in pixels if p < 120) / len(pixels)
+
+        if darkness > 0.45:
+            # فونت ضخیم یا تصویر اسکن‌شده با نویز زیاد
+            img = img.filter(ImageFilter.MedianFilter(size=3))
+            img = ImageOps.autocontrast(img, cutoff=1)
+            img = ImageEnhance.Contrast(img).enhance(1.4)
+        else:
+            # فونت نازک (مثلاً نستعلیق یا تایپ‌شده)
+            img = img.filter(ImageFilter.SMOOTH_MORE)
+            img = ImageEnhance.Sharpness(img).enhance(1.8)
+            img = ImageEnhance.Brightness(img).enhance(1.2)
+
+        img = img.point(lambda x: 0 if x < 130 else 255, '1')
         return img
     except Exception as e:
-        logger.error(f"Image preprocessing error: {e}")
+        logger.error(f"preprocess error: {e}")
         return img
 
 
-# ──────────────────────────────────────────────
-# 🌍 تشخیص زبان به صورت خودکار از تصویر
-# ──────────────────────────────────────────────
-
+# -----------------------
+# 🌐 تشخیص زبان تصویر
+# -----------------------
 def detect_language_from_image(image: Image.Image) -> str:
     """
-    🔹 تشخیص خودکار زبان غالب (فارسی، انگلیسی، عربی)
-    بر اساس شمارش کاراکترهای خاص هر زبان
+    تشخیص زبان غالب (فارسی، عربی، انگلیسی)
     """
     try:
-        text_sample = pytesseract.image_to_string(image, lang="fas+eng+ara", config="--psm 6")
-        persian_chars = len(re.findall(r'[\u0600-\u06FF]', text_sample))
-        english_chars = len(re.findall(r'[A-Za-z]', text_sample))
-        arabic_chars = len(re.findall(r'[\u0750-\u077F]', text_sample))
+        sample = image.copy()
+        sample.thumbnail((900, 900))
+        txt = pytesseract.image_to_string(sample, lang="fas+ara+eng", config="--psm 6")
+        farsi = len(re.findall(r'[\u0600-\u06FF]', txt))
+        arabic = len(re.findall(r'[\u0750-\u077F]', txt))
+        english = len(re.findall(r'[A-Za-z]', txt))
 
-        # زبان غالب را بر اساس بیشترین کاراکتر تشخیص می‌دهیم
-        if persian_chars > english_chars and persian_chars > arabic_chars:
+        if farsi > english * 1.5 and farsi >= arabic:
             return "fas"
-        elif arabic_chars > persian_chars and arabic_chars > english_chars:
+        if arabic > english * 1.5 and arabic > farsi:
             return "ara"
-        elif english_chars > persian_chars and english_chars > arabic_chars:
+        if english > farsi * 1.5 and english > arabic:
             return "eng"
-        else:
-            return "fas+eng+ara"
-    except Exception:
+        return "fas+eng+ara"
+    except Exception as e:
+        logger.error(f"Language detection failed: {e}")
         return "fas+eng+ara"
 
 
-# ──────────────────────────────────────────────
-# 📄 استخراج متن دیجیتال از PDF
-# ──────────────────────────────────────────────
-
+# -----------------------
+# 📘 استخراج متن دیجیتال از PDF
+# -----------------------
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
     """
-    🔹 اگر PDF متنی باشد (نه اسکن)، مستقیماً متن را استخراج می‌کند.
+    اگر PDF دیجیتال باشد، از متن داخلی استفاده می‌کند.
     """
     try:
-        text = []
         with fitz.open(pdf_path) as doc:
-            for page in doc:
-                text.append(page.get_text("text"))
-        return "\n".join(text).strip()
+            pages = [page.get_text("text") for page in doc]
+        return "\n".join(pages).strip()
     except Exception as e:
-        logger.error(f"PDF extraction error: {e}")
+        logger.error(f"PDF text extraction error: {e}")
         return ""
 
 
-# ──────────────────────────────────────────────
-# 🧠 OCR روی PDF اسکن‌شده
-# ──────────────────────────────────────────────
-
-def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
+# -----------------------
+# 🧠 OCR برای تصویر
+# -----------------------
+def ocr_image_to_text(img: Image.Image, lang: str) -> str:
     """
-    🔹 تبدیل هر صفحه PDF اسکن‌شده به تصویر و اجرای OCR
-    - پشتیبانی از فارسی، انگلیسی و عربی
-    - حفظ فاصله‌ها و ترتیب متن
+    اجرای OCR روی یک تصویر با تنظیمات دقیق
     """
     try:
-        images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
-    except Exception as e:
-        logger.error(f"PDF to image error: {e}")
-        return ""
-
-    results = []
-    for img in images:
-        img = preprocess_image(img)  # بهینه‌سازی تصویر
-        lang = detect_language_from_image(img)
-        text = pytesseract.image_to_string(
-            img,
-            lang=lang,
-            config="--psm 6 --oem 3 -c preserve_interword_spaces=1"
-        )
-        results.append(text)
-    return "\n\n".join(results).strip()
-
-
-# ──────────────────────────────────────────────
-# 🖼️ OCR از تصویر
-# ──────────────────────────────────────────────
-
-def ocr_image_to_text(image_path: str) -> str:
-    """
-    🔹 اجرای OCR روی تصویر تکی (JPG / PNG)
-    """
-    try:
-        img = Image.open(image_path)
-        img = preprocess_image(img)
-        lang = detect_language_from_image(img)
-        text = pytesseract.image_to_string(
-            img,
-            lang=lang,
-            config="--psm 6 --oem 3 -c preserve_interword_spaces=1"
-        )
-        return text.strip()
+        processed = preprocess_pil_image(img)
+        return pytesseract.image_to_string(processed, lang=lang, config=OCR_CONFIG).strip()
     except Exception as e:
         logger.error(f"OCR image error: {e}")
         return ""
 
 
-# ──────────────────────────────────────────────
-# 💬 هندل پیام‌ها (دریافت فایل PDF یا تصویر)
-# ──────────────────────────────────────────────
+# -----------------------
+# 📄 OCR برای PDF چند صفحه‌ای
+# -----------------------
+def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
+    """
+    OCR چندنخی PDF با کنترل هوشمند سرعت و دما (برای Render)
+    """
+    try:
+        images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+    except Exception as e:
+        logger.error(f"PDF to image conversion error: {e}")
+        return ""
 
+    # اگر صفحات زیاد باشد، OCR را دسته‌ای انجام می‌دهیم تا CPU زیاد درگیر نشود
+    batch_size = max(1, math.ceil(len(images) / MAX_WORKERS))
+    results = []
+
+    def process_batch(batch):
+        texts = []
+        for img in batch:
+            lang = detect_language_from_image(img)
+            txt = ocr_image_to_text(img, lang)
+            if txt.strip():
+                texts.append(txt)
+        return "\n\n".join(texts)
+
+    batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(batches))) as pool:
+        for r in pool.map(process_batch, batches):
+            results.append(r)
+
+    return "\n\n".join(results).strip()
+
+
+# -----------------------
+# 📨 هندل فایل‌ها (PDF / Image)
+# -----------------------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
         return
 
-    # دریافت فایل از پیام
-    file_id = None
-    file_name = None
     if message.document:
         file_id = message.document.file_id
-        file_name = message.document.file_name
+        file_name = message.document.file_name or "file.pdf"
     elif message.photo:
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        file_name = f"{photo.file_unique_id}.jpg"
+        file_id = message.photo[-1].file_id
+        file_name = f"{message.photo[-1].file_unique_id}.jpg"
     else:
         await message.reply_text("📄 لطفاً یک فایل PDF یا تصویر ارسال کنید.")
         return
@@ -179,65 +197,67 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         telegram_file = await context.bot.get_file(file_id)
         await telegram_file.download_to_drive(custom_path=local_path)
 
-        await message.reply_text("⏳ در حال تجزیه و تحلیل و استخراج متن با دقت بالا ...")
+        await message.reply_text("⏳ در حال پردازش فایل و استخراج متن با دقت بالا...")
 
-        def process():
+        def process_file():
             if file_name.lower().endswith(".pdf"):
                 text = extract_text_from_pdf_digital(local_path)
-                if not text.strip():
+                if not text:
                     text = ocr_pdf_to_text(local_path, poppler_path=POPPLER_PATH)
             else:
-                text = ocr_image_to_text(local_path)
+                img = Image.open(local_path)
+                lang = detect_language_from_image(img)
+                text = ocr_image_to_text(img, lang)
             return text
 
-        # اجرای پردازش در ThreadPool
-        text = await context.application.run_in_executor(executor, process)
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(executor, process_file)
 
         if not text.strip():
             await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
             return
 
-        # تقسیم متن در صورت طولانی بودن
+        # ارسال متن به صورت قطعه‌قطعه تا محدودیت تلگرام رعایت شود
         max_len = 4000
-        chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)]
-        for part in chunks:
-            await message.reply_text(part)
+        for i in range(0, len(text), max_len):
+            await message.reply_text(text[i:i + max_len])
 
+        await message.reply_text("✅ استخراج متن با موفقیت انجام شد.")
     except Exception as e:
-        logger.exception(e)
-        await message.reply_text(f"❌ خطا در پردازش فایل: {e}")
-
+        logger.exception(f"Error: {e}")
+        await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
     finally:
-        for f in Path(tmp_dir).glob("*"):
-            f.unlink(missing_ok=True)
-        Path(tmp_dir).rmdir()
+        try:
+            for f in Path(tmp_dir).glob("*"):
+                f.unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except Exception:
+            pass
 
 
-# ──────────────────────────────────────────────
-# 🚀 دستور /start برای شروع گفتگو
-# ──────────────────────────────────────────────
-
+# -----------------------
+# 🚀 فرمان /start
+# -----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
-        "من ربات استخراج متن هوشمند هستم 🤖\n\n"
-        "📸 عکس یا فایل PDF بفرست تا متن فارسی، انگلیسی یا عربی‌شو با دقت بالا استخراج کنم."
+        "من ربات استخراج متن هوشمند هستم 📄\n"
+        "کافیه فایل PDF یا عکس بفرستی تا با دقت بالا متن فارسی، عربی یا انگلیسی رو برات استخراج کنم."
     )
 
 
-# ──────────────────────────────────────────────
-# 🧩 اجرای اصلی برنامه
-# ──────────────────────────────────────────────
-
+# -----------------------
+# 🚀 اجرای اصلی
+# -----------------------
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ BOT_TOKEN تعریف نشده!")
+        raise RuntimeError("❌ متغیر BOT_TOKEN تنظیم نشده!")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    logger.info("🤖 OCR Bot is now running ...")
+    logger.info("🤖 Bot started successfully and is waiting for files...")
     app.run_polling()
 
 
