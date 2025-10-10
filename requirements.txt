@@ -1,6 +1,7 @@
 python-telegram-bot==20.8
-pytesseract
-pdf2image
-PyMuPDF
-Pillow
-opencv-python-headless
+pytesseract==0.3.10
+pdf2image==1.17.0
+PyMuPDF==1.24.3
+Pillow==10.3.0
+opencv-python-headless==4.9.0
+requests==2.31.0
