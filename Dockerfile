@@ -1,5 +1,5 @@
 # =======================================================
-# 🧠 Dockerfile — نسخه‌ی سریع OCR (fast + best)
+# 🧠 Dockerfile — OCR هوشمند سریع و دقیق (fast + best)
 # =======================================================
 
 FROM python:3.10-slim
@@ -24,9 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# -----------------------------
-# 📥 دانلود مدل‌های OCR هنگام اجرا (best + fast)
-# -----------------------------
+# 📥 دانلود مدل‌های OCR هنگام اجرا
 CMD bash -c "\
 mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
 cd /usr/share/tesseract-ocr/4.00/tessdata && \
