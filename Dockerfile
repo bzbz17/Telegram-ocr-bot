@@ -1,5 +1,5 @@
 # =======================================================
-# 🧠 Dockerfile — OCR هوشمند سریع و دقیق (fast + best)
+# 🧠 Dockerfile — OCR هوشمند با Flask برای UptimeRobot
 # =======================================================
 
 FROM python:3.10-slim
@@ -24,7 +24,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# 📥 دانلود مدل‌های OCR هنگام اجرا
+EXPOSE 10000
+
 CMD bash -c "\
 mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
 cd /usr/share/tesseract-ocr/4.00/tessdata && \
@@ -33,4 +34,4 @@ wget -q -O fas.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessd
 wget -q -O fas_fast.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/fas.traineddata || true; \
 wget -q -O eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata || true; \
 echo '✅ OCR traineddata files ready.'; \
-/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"
+python3 bot.py"
