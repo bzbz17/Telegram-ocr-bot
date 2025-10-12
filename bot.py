@@ -1,5 +1,5 @@
 # =============================================================
-# 🤖 bot.py — OCR هوشمند فارسی/انگلیسی با تشخیص دست‌نویس یا تایپ‌شده
+# 🤖 bot.py — OCR هوشمند + پینگ Flask برای UptimeRobot
 # =============================================================
 
 import os
@@ -10,12 +10,14 @@ import asyncio
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from threading import Thread
 
 import pytesseract
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageOps
 from pdf2image import convert_from_path
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -31,27 +33,18 @@ POPPLER_PATH = os.environ.get("POPPLER_PATH", "/usr/bin")
 MAX_WORKERS = int(os.environ.get("OCR_MAX_WORKERS", "6"))
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-# تنظیمات OCR پایه (دقت بالا + فاصله صحیح)
 OCR_CONFIG = "--oem 3 --psm 6 -c preserve_interword_spaces=1 --tessdata-dir /usr/share/tesseract-ocr/4.00/tessdata"
 
-
 # ----------------------------
-# 🧠 تابع تشخیص دست‌نویس یا تایپ‌شده
+# 🧠 تشخیص دست‌نویس یا تایپ‌شده
 # ----------------------------
 def detect_handwritten(image: np.ndarray) -> bool:
-    """
-    بررسی می‌کند که آیا تصویر بیشتر دست‌نویس است یا چاپی.
-    مبنا: تراکم لبه‌ها و شکل حروف.
-    """
     try:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
         density = np.sum(edges > 0) / edges.size
-
-        # اگر تراکم خطوط بالا باشد، احتمال دست‌نویس بودن بیشتر است.
         return density > 0.05
-    except Exception as e:
-        logger.error(f"Handwriting detection error: {e}")
+    except Exception:
         return False
 
 
@@ -59,22 +52,17 @@ def detect_handwritten(image: np.ndarray) -> bool:
 # 🧩 پیش‌پردازش تصویر
 # ----------------------------
 def preprocess_image(img: Image.Image, handwritten: bool = False) -> Image.Image:
-    """بهینه‌سازی تصویر برای OCR، بسته به نوع متن"""
     img = img.convert("L")
     if img.width < 1000:
         scale = 1000 / img.width
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
     img = ImageOps.autocontrast(img, cutoff=2)
-
     if handwritten:
-        # برای متن دست‌نویس: افزایش شدت و حذف سایه
         img = ImageEnhance.Contrast(img).enhance(2.0)
         img = ImageEnhance.Sharpness(img).enhance(1.8)
     else:
-        # برای متن تایپ‌شده: صاف و شفاف‌تر
         img = ImageEnhance.Contrast(img).enhance(1.4)
         img = ImageEnhance.Sharpness(img).enhance(1.2)
-
     img = img.point(lambda x: 255 if x > 160 else 0, mode="1")
     return img
 
@@ -83,7 +71,6 @@ def preprocess_image(img: Image.Image, handwritten: bool = False) -> Image.Image
 # 🌐 تشخیص زبان
 # ----------------------------
 def detect_language(image: Image.Image) -> str:
-    """تشخیص سریع زبان غالب"""
     try:
         txt = pytesseract.image_to_string(image, lang="fas+eng", config="--psm 6")
         farsi = len(re.findall(r'[\u0600-\u06FF]', txt))
@@ -94,10 +81,9 @@ def detect_language(image: Image.Image) -> str:
 
 
 # ----------------------------
-# 🔍 OCR روی تصویر
+# 🔍 OCR تصویر
 # ----------------------------
 def ocr_image_to_text(img: Image.Image, lang: str, handwritten: bool) -> str:
-    """اجرای OCR با بازسازی فاصله بین کلمات"""
     processed = preprocess_image(img, handwritten)
     data = pytesseract.image_to_data(
         processed, lang=lang, config=OCR_CONFIG, output_type=pytesseract.Output.DICT
@@ -123,10 +109,9 @@ def ocr_image_to_text(img: Image.Image, lang: str, handwritten: bool) -> str:
 
 
 # ----------------------------
-# 📄 OCR PDF چند صفحه‌ای
+# 📄 OCR PDF
 # ----------------------------
 def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
-    """تبدیل PDF به متن OCR با تشخیص نوع متن (دست‌نویس/تایپ‌شده)"""
     images = convert_from_path(pdf_path, dpi=200, poppler_path=poppler_path)
     results = []
 
@@ -141,7 +126,7 @@ def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
 
 
 # ----------------------------
-# 📨 دریافت فایل از تلگرام
+# 📨 فایل دریافتی از تلگرام
 # ----------------------------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -164,7 +149,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file = await context.bot.get_file(file_id)
         await file.download_to_drive(custom_path=local_path)
-        await msg.reply_text("⏳ در حال پردازش هوشمند تصویر و تشخیص نوع متن ...")
+        await msg.reply_text("⏳ در حال پردازش هوشمند OCR ...")
 
         def process():
             if file_name.lower().endswith(".pdf"):
@@ -186,7 +171,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in range(0, len(text), 4000):
             await msg.reply_text(text[i:i + 4000])
 
-        await msg.reply_text("✅ استخراج متن هوشمند انجام شد.")
+        await msg.reply_text("✅ استخراج متن با موفقیت انجام شد.")
     except Exception as e:
         logger.exception(e)
         await msg.reply_text(f"❌ خطا در پردازش: {str(e)}")
@@ -201,24 +186,40 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 سلام!\n"
-        "من ربات OCR هوشمند هستم 📑\n"
-        "فایل PDF یا عکس بفرست تا تشخیص بدم تایپ‌شده‌ست یا دست‌نویس و متنش رو با دقت بالا برات استخراج کنم 💪"
+        "👋 سلام!\nمن ربات OCR هوشمند هستم 📑\n"
+        "فایل PDF یا عکس بفرست تا متن تایپ‌شده یا دست‌نویسش رو برات استخراج کنم ✨"
     )
 
 
 # ----------------------------
-# 🧠 اجرای اصلی
+# 🌐 Flask Ping Server برای UptimeRobot
+# ----------------------------
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "✅ Bot is alive!", 200
+
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=10000)
+
+
+# ----------------------------
+# 🧠 اجرای همزمان Flask و Bot
 # ----------------------------
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("❌ BOT_TOKEN تعریف نشده!")
 
+    # اجرای Flask در Thread جدا برای پینگ UptimeRobot
+    Thread(target=run_flask).start()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    logger.info("🤖 Smart OCR Bot started successfully ...")
+    logger.info("🤖 Smart OCR Bot started with Flask keep-alive ...")
     app.run_polling()
 
 
