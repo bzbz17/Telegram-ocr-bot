@@ -1,37 +1,55 @@
-# =======================================================
-# 🐳 Dockerfile — OCR Bot فارسی / عربی / انگلیسی
-# =======================================================
-
+# ==========================
+#  Base image: سبک و سریع
+# ==========================
 FROM python:3.10-slim
 
-ENV PYTHONUNBUFFERED=1
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
+# جلوگیری از سوالات نصب
+ENV DEBIAN_FRONTEND=noninteractive
 
+# ==========================
+# نصب ابزارهای OCR و وابستگی‌ها
+# ==========================
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
+    tesseract-ocr-fas \
+    tesseract-ocr-ara \
+    tesseract-ocr-eng \
+    libgl1-mesa-glx \
     poppler-utils \
     ghostscript \
-    libtesseract-dev \
-    libgl1 \
-    libglib2.0-0 \
-    fonts-hosny-amiri \
-    fonts-dejavu-core \
     wget \
-    && rm -rf /var/lib/apt/lists/*
+    supervisor \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ==========================
+# مسیر مدل‌ها و دانلود tessdata_fast
+# ==========================
+RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
+    cd /usr/share/tesseract-ocr/4.00/tessdata && \
+    echo "📦 Downloading fast OCR models..." && \
+    wget -q -O fas.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/fas.traineddata && \
+    wget -q -O ara.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/ara.traineddata && \
+    wget -q -O eng.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata && \
+    echo "✅ OCR traineddata files ready."
+
+# ==========================
+# کپی فایل‌های پروژه
+# ==========================
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY . /app
 
+# ==========================
+# نصب وابستگی‌های پایتون
+# ==========================
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ==========================
+# Supervisor برای اجرای Flask + Bot
+# ==========================
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# پورت برای Flask (UptimeRobot)
 EXPOSE 10000
 
-CMD bash -c "\
-mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
-cd /usr/share/tesseract-ocr/4.00/tessdata && \
-echo '📦 Downloading OCR language models...'; \
-wget -q -O fas.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/fas.traineddata || true; \
-wget -q -O ara.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/ara.traineddata || true; \
-wget -q -O eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/eng.traineddata || true; \
-echo '✅ OCR traineddata files ready.'; \
-cd /app && python3 bot.py"
+# اجرای Supervisor
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
