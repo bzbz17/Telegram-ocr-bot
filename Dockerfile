@@ -1,16 +1,14 @@
 # ==========================
-#  Base image
+#  Base image سبک و امن
 # ==========================
 FROM python:3.10-slim
 
-# جلوگیری از سوالات هنگام نصب
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ==========================
 # نصب ابزارهای OCR و وابستگی‌ها
 # ==========================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
     tesseract-ocr \
     libtesseract-dev \
     libgl1 \
@@ -21,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ==========================
-# دانلود مدل‌های OCR (fas, ara, eng)
+# دانلود مدل‌های OCR سریع
 # ==========================
 RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
     cd /usr/share/tesseract-ocr/4.00/tessdata && \
@@ -32,13 +30,13 @@ RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
     echo "✅ OCR traineddata files ready."
 
 # ==========================
-# تنظیم پوشه کاری
+# پوشه کاری و کپی فایل‌ها
 # ==========================
 WORKDIR /app
 COPY . /app
 
 # ==========================
-# نصب کتابخانه‌های Python
+# نصب پکیج‌های Python
 # ==========================
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -47,8 +45,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ==========================
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# پورت برای Flask
 EXPOSE 10000
 
-# اجرای Supervisor
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
