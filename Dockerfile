@@ -1,8 +1,14 @@
+# ===============================
+# 🧠 پایه: نسخه سبک پایتون
+# ===============================
 FROM python:3.10-slim
 
-WORKDIR /app
+# جلوگیری از ورودی تعاملی در زمان build
+ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب وابستگی‌های سیستم
+# ===============================
+# 🧩 نصب ابزارها و وابستگی‌های لازم OCR و Supervisor
+# ===============================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     libtesseract-dev \
@@ -13,21 +19,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# دانلود مدل‌های دقیق (best)
-RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
-    cd /usr/share/tesseract-ocr/4.00/tessdata && \
-    echo "📦 Downloading best tessdata models..." && \
-    wget -q -O fas.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/fas.traineddata && \
-    wget -q -O ara.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/ara.traineddata && \
-    wget -q -O eng.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata && \
-    echo "✅ High-quality OCR traineddata files ready."
+# ===============================
+# 📦 نصب زبان‌های OCR (فارسی، عربی، انگلیسی)
+# ===============================
+RUN set -eux; \
+    mkdir -p /usr/share/tesseract-ocr/4.00/tessdata; \
+    echo "📦 Downloading OCR language models..."; \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/fas.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/fas.traineddata || true; \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/ara.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/ara.traineddata || true; \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata || true; \
+    echo "✅ OCR traineddata files ready."
 
-# نصب پکیج‌های پایتون
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# ===============================
+# 🧰 کپی فایل‌های پروژه به داخل کانتینر
+# ===============================
+WORKDIR /app
+COPY . /app
 
-# کپی فایل‌های پروژه
-COPY . .
+# ===============================
+# 📜 نصب کتابخانه‌های پایتون
+# ===============================
+RUN pip install --no-cache-dir \
+    python-telegram-bot==20.3 \
+    pytesseract \
+    pdf2image \
+    fitz \
+    opencv-python-headless==4.8.1.78 \
+    easyocr \
+    numpy \
+    Pillow \
+    flask \
+    arabic-reshaper \
+    python-bidi
 
-# Supervisor برای نگه داشتن ربات در UptimeRobot
-CMD ["supervisord", "-c", "/app/supervisord.conf"]
+# ===============================
+# ⚙️ تنظیم Supervisor برای مدیریت بات
+# ===============================
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# ===============================
+# 🌍 باز کردن پورت وب برای UptimeRobot
+# ===============================
+EXPOSE 8080
+
+# ===============================
+# 🚀 اجرای Supervisor (مدیریت بات)
+# ===============================
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
