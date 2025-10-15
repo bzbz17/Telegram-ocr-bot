@@ -1,134 +1,112 @@
 import os
-import tempfile
 import logging
+import tempfile
 import re
-from pathlib import Path
-
-from flask import Flask
-from threading import Thread
-
 import pytesseract
+import fitz  # PyMuPDF
 from PIL import Image
 from pdf2image import convert_from_path
-import fitz  # PyMuPDF
-import cv2
-import numpy as np
-import arabic_reshaper
+from arabic_reshaper import reshape
 from bidi.algorithm import get_display
-import easyocr
-
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# ---------------- تنظیمات پایه ---------------- #
+# ------------------------------
+# تنظیمات لاگ
+# ------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------------------
+# تنظیم متغیرهای محیطی
+# ------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POPPLER_PATH = os.environ.get("POPPLER_PATH", "/usr/bin")
 
-# Flask برای UptimeRobot
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "🤖 OCR Bot is alive and running!"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
-
-# ---------------- پردازش متن راست‌به‌چپ ---------------- #
+# ------------------------------
+# تابع اصلاح جهت متن‌های فارسی و عربی
+# ------------------------------
 def fix_rtl_text(text: str) -> str:
-    """اصلاح ترتیب و شکل حروف فارسی و عربی برای نمایش درست در تلگرام"""
+    """اصلاح جهت و نمایش صحیح حروف فارسی/عربی"""
     try:
-        text = re.sub(r'[^\S\r\n]+', ' ', text)  # حذف فاصله‌های اضافه
-        reshaped = arabic_reshaper.reshape(text)
-        bidi_text = get_display(reshaped)
-        return bidi_text
+        lines = text.splitlines()
+        fixed_lines = []
+        for line in lines:
+            if re.search(r'[\u0600-\u06FF]', line):  # اگر متن فارسی/عربی دارد
+                reshaped = reshape(line)
+                fixed_lines.append(get_display(reshaped))
+            else:
+                fixed_lines.append(line)
+        return "\n".join(fixed_lines)
     except Exception as e:
-        logger.warning(f"RTL Fix error: {e}")
+        logger.error(f"RTL Fix Error: {e}")
         return text
 
-# ---------------- توابع OCR ---------------- #
-def preprocess_image(img_path: str) -> Image.Image:
-    """پیش‌پردازش تصویر برای OCR با حذف نویز، صاف‌سازی و سیاه‌سفید کردن"""
-    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, 9, 75, 75)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    coords = np.column_stack(np.where(thresh > 0))
-    if len(coords) > 0:
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45:
-            angle = -(90 + angle)
-        else:
-            angle = -angle
-        (h, w) = gray.shape[:2]
-        M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-        gray = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    return Image.fromarray(gray)
+# ------------------------------
+# تابع تشخیص زبان از تصویر
+# ------------------------------
+def detect_language(image: Image.Image) -> str:
+    """تشخیص زبان غالب تصویر"""
+    text_preview = pytesseract.image_to_string(image, lang="fas+ara+eng", config="--psm 6")
+    persian = len(re.findall(r'[\u0600-\u06FF]', text_preview))
+    english = len(re.findall(r'[A-Za-z]', text_preview))
+    if persian > english * 1.5:
+        return "fas"
+    elif english > persian * 1.5:
+        return "eng"
+    else:
+        return "fas+ara+eng"
 
+# ------------------------------
+# OCR تصویر
+# ------------------------------
 def extract_text_tesseract(image: Image.Image, lang="fas+ara+eng") -> str:
-    """استخراج متن با Tesseract"""
-    config = "--oem 3 --psm 6"
-    return pytesseract.image_to_string(image, lang=lang, config=config).strip()
+    """استخراج متن از تصویر با دقت بالا"""
+    config = "--oem 1 --psm 6"
+    text = pytesseract.image_to_string(image, lang=lang, config=config)
+    text = text.replace("ﻻ", "لا").replace("ﺎ", "ا")
+    return text.strip()
 
-def extract_text_easyocr(image_path: str, langs=["fa", "ar", "en"]) -> str:
-    """استخراج متن با EasyOCR (فقط در صورت نیاز)"""
-    reader = easyocr.Reader(langs, gpu=False)
-    results = reader.readtext(image_path, detail=0, paragraph=True)
-    return "\n".join(results).strip()
-
-def extract_from_pdf(pdf_path: str) -> str:
-    """استخراج متن از PDF (دیجیتال یا OCR)"""
-    text = ""
+# ------------------------------
+# استخراج متن از PDF دیجیتال
+# ------------------------------
+def extract_text_from_pdf_digital(pdf_path: str) -> str:
+    """اگر PDF دیجیتال باشد، متن مستقیم استخراج می‌شود"""
+    text_blocks = []
     try:
         with fitz.open(pdf_path) as doc:
             for page in doc:
-                text += page.get_text("text") + "\n"
+                content = page.get_text("text")
+                if content.strip():
+                    text_blocks.append(content)
     except Exception as e:
-        logger.error(f"PDF read error: {e}")
+        logger.error(f"PDF digital extract error: {e}")
+    return "\n".join(text_blocks).strip()
 
-    if text.strip():
-        return fix_rtl_text(text.strip())
+# ------------------------------
+# استخراج متن از PDF اسکن‌شده با OCR
+# ------------------------------
+def extract_text_from_pdf_ocr(pdf_path: str) -> str:
+    """OCR روی صفحات PDF اسکن‌شده"""
+    try:
+        images = convert_from_path(pdf_path, dpi=250, poppler_path=POPPLER_PATH)
+        all_text = []
+        for img in images:
+            lang = detect_language(img)
+            text = extract_text_tesseract(img, lang)
+            all_text.append(text)
+        return "\n\n".join(all_text).strip()
+    except Exception as e:
+        logger.error(f"OCR PDF Error: {e}")
+        return ""
 
-    # OCR اگر PDF تصویری بود
-    images = convert_from_path(pdf_path, dpi=250, poppler_path=POPPLER_PATH)
-    all_text = ""
-    for img in images:
-        tmp_img = tempfile.mktemp(suffix=".png")
-        img.save(tmp_img, "PNG")
-        processed = preprocess_image(tmp_img)
-        ocr_text = extract_text_tesseract(processed)
-        if len(ocr_text) < 20:
-            logger.info("🧠 Switching to EasyOCR fallback...")
-            ocr_text = extract_text_easyocr(tmp_img)
-        all_text += "\n" + ocr_text
-    return fix_rtl_text(all_text.strip())
-
-def extract_from_image(image_path: str) -> str:
-    """استخراج متن از عکس با fallback هوشمند"""
-    processed = preprocess_image(image_path)
-    text = extract_text_tesseract(processed)
-    if len(text) < 20:
-        logger.info("🧠 Switching to EasyOCR fallback...")
-        text = extract_text_easyocr(image_path)
-    return fix_rtl_text(text.strip())
-
-# ---------------- هندلر ربات ---------------- #
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 سلام! من ربات استخراج متن هوشمندم.\n"
-        "فقط کافیه عکس یا PDF بفرستی تا متن داخلش رو برات بیرون بکشم 🔍"
-    )
-
+# ------------------------------
+# هندل فایل ارسال‌شده به ربات
+# ------------------------------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
         return
-
-    file_id = None
-    file_name = None
 
     if message.document:
         file_id = message.document.file_id
@@ -137,6 +115,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = message.photo[-1]
         file_id = photo.file_id
         file_name = f"{photo.file_unique_id}.jpg"
+    else:
+        await message.reply_text("📄 لطفاً یک فایل PDF یا عکس ارسال کنید.")
+        return
 
     tmp_dir = tempfile.mkdtemp()
     local_path = os.path.join(tmp_dir, file_name)
@@ -144,49 +125,59 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         telegram_file = await context.bot.get_file(file_id)
         await telegram_file.download_to_drive(custom_path=local_path)
+        await message.reply_text("⏳ در حال پردازش و استخراج متن ...")
 
-        await message.reply_text("🕓 در حال پردازش و استخراج متن... لطفاً چند لحظه صبر کنید.")
-
+        # استخراج متن بر اساس نوع فایل
         if file_name.lower().endswith(".pdf"):
-            text = extract_from_pdf(local_path)
+            text = extract_text_from_pdf_digital(local_path)
+            if not text:
+                text = extract_text_from_pdf_ocr(local_path)
         else:
-            text = extract_from_image(local_path)
+            img = Image.open(local_path)
+            lang = detect_language(img)
+            text = extract_text_tesseract(img, lang)
 
         if not text.strip():
-            await message.reply_text("⚠️ هیچ متنی پیدا نشد.")
+            await message.reply_text("⚠️ متنی شناسایی نشد.")
             return
 
-        # ارسال متن نهایی (در صورت طولانی بودن، بخش‌بخش)
-        if len(text) > 4000:
-            for i in range(0, len(text), 4000):
-                await message.reply_text(text[i:i+4000])
-        else:
-            await message.reply_text(text)
+        text = fix_rtl_text(text)
+        await message.reply_text(f"📝 متن استخراج‌شده:\n\n{text}")
 
     except Exception as e:
-        logger.exception(f"Error: {e}")
+        logger.error(f"Processing error: {e}")
         await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
     finally:
         try:
-            for f in Path(tmp_dir).glob("*"):
-                f.unlink(missing_ok=True)
-            Path(tmp_dir).rmdir()
+            for f in os.listdir(tmp_dir):
+                os.remove(os.path.join(tmp_dir, f))
+            os.rmdir(tmp_dir)
         except Exception:
             pass
 
-# ---------------- اجرای ربات ---------------- #
+# ------------------------------
+# فرمان شروع ربات
+# ------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 سلام!\n"
+        "من ربات OCR هوشمند هستم.\n"
+        "📄 فایل PDF یا عکس بفرست تا متن فارسی، عربی یا انگلیسی‌شو استخراج کنم."
+    )
+
+# ------------------------------
+# شروع برنامه
+# ------------------------------
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ BOT_TOKEN is missing!")
+        raise RuntimeError("❌ BOT_TOKEN در محیط تنظیم نشده!")
 
-    Thread(target=run_flask, daemon=True).start()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
-    app_tg.add_handler(CommandHandler("start", start_cmd))
-    app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
-
-    logger.info("🤖 OCR Bot started successfully (RTL Fixed + Auto Fallback)...")
-    app_tg.run_polling()
+    logger.info("🤖 Bot started successfully.")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
