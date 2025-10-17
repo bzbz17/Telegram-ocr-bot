@@ -1,6 +1,3 @@
-# ===============================
-# 🚀 Render Deployment Config
-# ===============================
 services:
   - type: web
     name: telegram-ocr-bot
@@ -8,13 +5,4 @@ services:
     plan: free
     branch: main
     autoDeploy: true
-
-    # دستور شروع کانتینر
-    startCommand: /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
-
-    # متغیرهای محیطی (Environment Variables)
-    envVars:
-      - key: BOT_TOKEN
-        sync: false   # مقدار را دستی در داشبورد Render وارد کن (در قسمت Environment)
-      - key: PORT
-        value: 8080   # پورت Flask که UptimeRobot پینگش می‌کند
+    healthCheckPath: /
