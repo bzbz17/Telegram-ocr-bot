@@ -1,167 +1,96 @@
 import os
-import logging
-import tempfile
-from pathlib import Path
-from flask import Flask
-from threading import Thread
-
+import cv2
 import pytesseract
+import easyocr
+import numpy as np
+import fitz  # PyMuPDF
 from pdf2image import convert_from_path
 from PIL import Image
-import easyocr
-
+from flask import Flask
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# =============================
-# 🧠 تنظیمات اولیه
-# =============================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-POPPLER_PATH = os.getenv("POPPLER_PATH", "/usr/bin")
-
-# =============================
-# 🌐 Flask برای UptimeRobot
-# =============================
+# --- تنظیم Flask برای UptimeRobot ---
 app = Flask(__name__)
 
-@app.route("/")
+@app.route('/')
 def home():
-    return "🤖 Bot is running fine!"
+    return "✅ OCR Telegram Bot is running!"
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+# --- تنظیم زبان‌ها برای OCR ---
+reader = easyocr.Reader(['fa', 'ar', 'en'], gpu=False)
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
-Thread(target=run_flask, daemon=True).start()
+# --- پردازش تصویر برای OCR ---
+def preprocess_image(image_path):
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.fastNlMeansDenoising(gray, None, 30, 7, 21)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return binary
 
-# =============================
-# 🧠 OCR Reader آماده (EasyOCR)
-# =============================
-reader = easyocr.Reader(["fa", "ar", "en"], gpu=False)
+# --- اجرای OCR با EasyOCR و Tesseract ---
+def extract_text(image_path):
+    img = preprocess_image(image_path)
+    if img is None:
+        return "❌ تصویر نامعتبر است."
 
-# =============================
-# 📄 توابع OCR
-# =============================
-def extract_text_from_pdf(pdf_path: str) -> str:
-    """استخراج متن از PDF با اولویت دیجیتال، سپس OCR"""
-    text_result = ""
+    temp_path = "/tmp/processed_image.png"
+    cv2.imwrite(temp_path, img)
 
-    # ۱. تلاش برای استخراج متن دیجیتال
-    try:
-        import fitz  # PyMuPDF
-        with fitz.open(pdf_path) as doc:
-            for page in doc:
-                txt = page.get_text("text")
-                if txt.strip():
-                    text_result += txt + "\n"
-    except Exception as e:
-        logger.warning(f"Digital PDF extraction failed: {e}")
+    result_easy = reader.readtext(temp_path, detail=0, paragraph=True)
+    result_tess = pytesseract.image_to_string(Image.open(temp_path), lang='fas+ara+eng')
 
-    # ۲. اگر متن خالی بود، OCR انجام بده
-    if not text_result.strip():
-        try:
-            images = convert_from_path(pdf_path, dpi=200, poppler_path=POPPLER_PATH)
-            for img in images:
-                text_result += "\n".join(reader.readtext(img, detail=0, paragraph=True))
-        except Exception as e:
-            logger.error(f"OCR PDF Error: {e}")
-            return ""
+    text = "\n".join(result_easy) + "\n" + result_tess
 
-    # 🔹 اینجا دیگه نیازی به arabic_reshaper یا bidi نیست
-    # چون EasyOCR خروجی قابل‌خواندن RTL برمی‌گردونه.
-    return text_result.strip()
-
-
-def extract_text_from_image(image_path: str) -> str:
-    """استخراج متن از عکس با EasyOCR + Tesseract برای fallback"""
-    try:
-        text = "\n".join(reader.readtext(image_path, detail=0, paragraph=True))
-        if not text.strip():
-            img = Image.open(image_path)
-            text = pytesseract.image_to_string(img, lang="fas+ara+eng")
-        return text.strip()
-    except Exception as e:
-        logger.error(f"OCR Image Error: {e}")
-        return ""
-
-# =============================
-# 🤖 فرمان‌ها و هندلرها
-# =============================
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 سلام!\n"
-        "فقط یه عکس یا فایل PDF بفرست تا متن فارسی، عربی یا انگلیسی‌ش برات استخراج بشه ✨"
-    )
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message:
-        return
-
-    file_id, file_name = None, None
-    if message.document:
-        file_id = message.document.file_id
-        file_name = message.document.file_name
-    elif message.photo:
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        file_name = f"{photo.file_unique_id}.jpg"
-    else:
-        await message.reply_text("📎 لطفاً فایل PDF یا عکس بفرست.")
-        return
-
-    tmp_dir = tempfile.mkdtemp()
-    local_path = os.path.join(tmp_dir, file_name)
-
-    try:
-        await message.reply_text("🕓 در حال پردازش و استخراج متن... لطفاً چند لحظه صبر کنید.")
-
-        telegram_file = await context.bot.get_file(file_id)
-        await telegram_file.download_to_drive(custom_path=local_path)
-
-        if file_name.lower().endswith(".pdf"):
-            text = extract_text_from_pdf(local_path)
+    # --- اصلاح ترتیب حروف فارسی (راست به چپ) ---
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    fixed_lines = []
+    for line in lines:
+        if any('\u0600' <= ch <= '\u06FF' for ch in line):  # اگر فارسی یا عربی است
+            fixed_lines.append(line[::-1])
         else:
-            text = extract_text_from_image(local_path)
+            fixed_lines.append(line)
+    return "\n".join(fixed_lines)
 
-        if not text.strip():
-            await message.reply_text("⚠️ متنی قابل استخراج نبود.")
-            return
+# --- پردازش PDF ---
+def process_pdf(pdf_path):
+    images = convert_from_path(pdf_path, dpi=300)
+    all_text = ""
+    for i, img in enumerate(images):
+        img_path = f"/tmp/page_{i}.png"
+        img.save(img_path, "PNG")
+        all_text += extract_text(img_path) + "\n\n"
+    return all_text.strip()
 
-        # ✨ ارسال متن به صورت بخش‌بخش اگر طولانی بود
-        chunk_size = 3500
-        for i in range(0, len(text), chunk_size):
-            await message.reply_text(text[i:i + chunk_size])
+# --- هندلر پیام‌ها در تلگرام ---
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await update.message.document.get_file()
+    file_path = f"/tmp/{file.file_path.split('/')[-1]}"
+    await file.download_to_drive(file_path)
 
-        await message.reply_text("✅ استخراج متن کامل شد!")
+    if file_path.lower().endswith('.pdf'):
+        await update.message.reply_text("📄 در حال استخراج متن از PDF ... لطفاً چند لحظه صبر کنید.")
+        text = process_pdf(file_path)
+    else:
+        await update.message.reply_text("🖼 در حال پردازش تصویر ...")
+        text = extract_text(file_path)
 
-    except Exception as e:
-        logger.exception(f"Error processing file: {e}")
-        await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
+    await update.message.reply_text("📝 نتیجه OCR:\n\n" + text[:4000])
 
-    finally:
-        try:
-            for f in Path(tmp_dir).glob("*"):
-                f.unlink(missing_ok=True)
-            Path(tmp_dir).rmdir()
-        except Exception:
-            pass
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 سلام! فایل تصویری یا PDF خودت رو بفرست تا متنش رو استخراج کنم.")
 
-# =============================
-# 🚀 اجرای ربات
-# =============================
-def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("❌ BOT_TOKEN در محیط تنظیم نشده است.")
+# --- اجرای ربات تلگرام ---
+TOKEN = os.getenv("BOT_TOKEN")
+app_telegram = ApplicationBuilder().token(TOKEN).build()
+app_telegram.add_handler(CommandHandler("start", start))
+app_telegram.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
-
-    logger.info("🤖 Bot started and waiting for files...")
-    app.run_polling()
+import threading
+threading.Thread(target=lambda: app_telegram.run_polling(allowed_updates=Update.ALL_TYPES)).start()
 
 if __name__ == "__main__":
-    main()
+    app.run(host="0.0.0.0", port=8080)
