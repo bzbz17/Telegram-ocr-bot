@@ -2,13 +2,10 @@ import os
 import logging
 import tempfile
 from pathlib import Path
-import re
 from flask import Flask
 from threading import Thread
 
 import pytesseract
-import arabic_reshaper
-from bidi.algorithm import get_display
 from pdf2image import convert_from_path
 from PIL import Image
 import easyocr
@@ -17,7 +14,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 # =============================
-# 🧩 تنظیمات اولیه و لاگ
+# 🧠 تنظیمات اولیه
 # =============================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,7 +29,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🤖 Bot is running successfully!"
+    return "🤖 Bot is running fine!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -40,29 +37,21 @@ def run_flask():
 Thread(target=run_flask, daemon=True).start()
 
 # =============================
-# 🧠 ابزار OCR با EasyOCR و Tesseract
+# 🧠 OCR Reader آماده (EasyOCR)
 # =============================
+reader = easyocr.Reader(["fa", "ar", "en"], gpu=False)
 
-easyocr_reader = easyocr.Reader(["fa", "ar", "en"], gpu=False)
-
-def normalize_rtl_text(text: str) -> str:
-    """
-    ✅ تنظیم راست به چپ برای متون فارسی و عربی
-    """
-    text = text.replace("\u200c", " ")  # حذف نیم‌فاصله‌های خراب
-    reshaped = arabic_reshaper.reshape(text)
-    return get_display(reshaped)
-
+# =============================
+# 📄 توابع OCR
+# =============================
 def extract_text_from_pdf(pdf_path: str) -> str:
-    """
-    📄 استخراج متن از PDF با ترکیب دیجیتال و OCR
-    """
+    """استخراج متن از PDF با اولویت دیجیتال، سپس OCR"""
     text_result = ""
 
-    # تلاش برای استخراج متن دیجیتال (اگر فایل متنی است)
+    # ۱. تلاش برای استخراج متن دیجیتال
     try:
-        from fitz import open as fitz_open
-        with fitz_open(pdf_path) as doc:
+        import fitz  # PyMuPDF
+        with fitz.open(pdf_path) as doc:
             for page in doc:
                 txt = page.get_text("text")
                 if txt.strip():
@@ -70,50 +59,40 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     except Exception as e:
         logger.warning(f"Digital PDF extraction failed: {e}")
 
-    # اگر متن خالی بود، OCR انجام بده
+    # ۲. اگر متن خالی بود، OCR انجام بده
     if not text_result.strip():
         try:
-            images = convert_from_path(pdf_path, dpi=250, poppler_path=POPPLER_PATH)
-            ocr_texts = []
+            images = convert_from_path(pdf_path, dpi=200, poppler_path=POPPLER_PATH)
             for img in images:
-                # EasyOCR سریع‌تر و دقیق‌تر
-                result = easyocr_reader.readtext(img, detail=0, paragraph=True)
-                joined_text = "\n".join(result)
-                ocr_texts.append(joined_text)
-            text_result = "\n".join(ocr_texts)
+                text_result += "\n".join(reader.readtext(img, detail=0, paragraph=True))
         except Exception as e:
             logger.error(f"OCR PDF Error: {e}")
             return ""
 
-    # تصحیح جهت متن
-    return normalize_rtl_text(text_result)
+    # 🔹 اینجا دیگه نیازی به arabic_reshaper یا bidi نیست
+    # چون EasyOCR خروجی قابل‌خواندن RTL برمی‌گردونه.
+    return text_result.strip()
+
 
 def extract_text_from_image(image_path: str) -> str:
-    """
-    🖼️ استخراج متن از تصویر با EasyOCR + Tesseract
-    """
+    """استخراج متن از عکس با EasyOCR + Tesseract برای fallback"""
     try:
-        # OCR سریع و چندزبانه
-        result = easyocr_reader.readtext(image_path, detail=0, paragraph=True)
-        text = "\n".join(result)
+        text = "\n".join(reader.readtext(image_path, detail=0, paragraph=True))
         if not text.strip():
-            # fallback به pytesseract
             img = Image.open(image_path)
-            text = pytesseract.image_to_string(img, lang="fas+eng+ara").strip()
-        return normalize_rtl_text(text)
+            text = pytesseract.image_to_string(img, lang="fas+ara+eng")
+        return text.strip()
     except Exception as e:
         logger.error(f"OCR Image Error: {e}")
         return ""
 
 # =============================
-# 🤖 ربات تلگرام
+# 🤖 فرمان‌ها و هندلرها
 # =============================
-
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
-        "من ربات استخراج متن هستم.\n\n"
-        "📄 فقط فایل PDF یا عکس بفرست تا متن فارسی، عربی یا انگلیسی‌شو برات استخراج کنم ✨"
+        "فقط یه عکس یا فایل PDF بفرست تا متن فارسی، عربی یا انگلیسی‌ش برات استخراج بشه ✨"
     )
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,14 +109,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = photo.file_id
         file_name = f"{photo.file_unique_id}.jpg"
     else:
-        await message.reply_text("📎 لطفاً فقط PDF یا عکس بفرست.")
+        await message.reply_text("📎 لطفاً فایل PDF یا عکس بفرست.")
         return
 
     tmp_dir = tempfile.mkdtemp()
     local_path = os.path.join(tmp_dir, file_name)
 
     try:
-        await message.reply_text("🕓 در حال پردازش و استخراج متن، لطفاً کمی صبر کنید...")
+        await message.reply_text("🕓 در حال پردازش و استخراج متن... لطفاً چند لحظه صبر کنید.")
 
         telegram_file = await context.bot.get_file(file_id)
         await telegram_file.download_to_drive(custom_path=local_path)
@@ -151,16 +130,17 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("⚠️ متنی قابل استخراج نبود.")
             return
 
-        # ✨ ارسال متن کامل در چند پیام (در صورت طولانی بودن)
+        # ✨ ارسال متن به صورت بخش‌بخش اگر طولانی بود
         chunk_size = 3500
         for i in range(0, len(text), chunk_size):
-            await message.reply_text(text[i:i+chunk_size])
+            await message.reply_text(text[i:i + chunk_size])
 
-        await message.reply_text("✅ متن کامل استخراج شد!")
+        await message.reply_text("✅ استخراج متن کامل شد!")
 
     except Exception as e:
         logger.exception(f"Error processing file: {e}")
         await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
+
     finally:
         try:
             for f in Path(tmp_dir).glob("*"):
@@ -169,6 +149,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+# =============================
+# 🚀 اجرای ربات
+# =============================
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("❌ BOT_TOKEN در محیط تنظیم نشده است.")
