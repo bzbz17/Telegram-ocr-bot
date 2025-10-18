@@ -1,23 +1,24 @@
 FROM python:3.10-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# نصب وابستگی‌ها
+RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-fas \
     tesseract-ocr-ara \
     tesseract-ocr-eng \
-    poppler-utils \
     libgl1 \
+    poppler-utils \
     ghostscript \
-    supervisor && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    wget \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# نصب پکیج‌های پایتون
 WORKDIR /app
-COPY . .
-
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# کپی فایل‌های پروژه
+COPY . .
 
-CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# اجرای ربات
+CMD ["python", "bot.py"]
