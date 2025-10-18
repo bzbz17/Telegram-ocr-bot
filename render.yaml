@@ -1,8 +1,13 @@
 services:
   - type: web
     name: telegram-ocr-bot
-    env: docker
+    env: python
     plan: free
-    branch: main
+    buildCommand: ""
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: POPPLER_PATH
+        value: /usr/bin
     autoDeploy: true
-    healthCheckPath: /
