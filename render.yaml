@@ -1,9 +1,10 @@
 services:
   - type: web
     name: telegram-ocr-bot
-    env: python
+    env: docker
     plan: free
-    buildCommand: ""
+    branch: main
+    autoDeploy: true
     startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
