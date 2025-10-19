@@ -1,104 +1,83 @@
 import os
-import io
-import cv2
-import numpy as np
-import fitz  # PyMuPDF
-import easyocr
-from PIL import Image
+import logging
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import easyocr
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path
 from hazm import Normalizer
-import language_tool_python
+import numpy as np
+import cv2
+from PIL import Image
+import tempfile
 
-# 🔹 تنظیم OCR فارسی + انگلیسی
-reader = easyocr.Reader(['fa', 'en'])
+# --- Logging ---
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# 🔹 ابزارهای اصلاح و نرمال‌سازی
-normalizer = Normalizer()
-tool = language_tool_python.LanguageTool('fa')
-
-# 🔹 Flask برای uptime
+# --- Flask server for uptime ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ OCR Telegram Bot is alive!"
+    return "🤖 OCR Bot is alive!", 200
 
-# =============================
-#      پردازش تصویر و PDF
-# =============================
-def preprocess_image(image_path):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None
-    img = cv2.resize(img, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-    img = cv2.fastNlMeansDenoising(img, None, 10, 7, 21)
-    img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                cv2.THRESH_BINARY, 31, 2)
-    return img
+# --- Initialize OCR ---
+reader = easyocr.Reader(['fa', 'ar', 'en'])
+normalizer = Normalizer()
 
-def extract_text_from_pdf(pdf_path):
-    doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text("text")
-    if text.strip():
-        return text  # PDF قابل کپی بود
+# --- Telegram bot setup ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-    # در غیر این صورت، OCR
-    for page_num in range(len(doc)):
-        pix = doc.load_page(page_num).get_pixmap()
-        img_data = Image.open(io.BytesIO(pix.tobytes("png")))
-        img_path = f"temp_{page_num}.png"
-        img_data.save(img_path)
-        text += extract_text_from_image(img_path)
-        os.remove(img_path)
-    return text
-
-def extract_text_from_image(image_path):
-    processed = preprocess_image(image_path)
-    if processed is None:
-        return "❌ خطا در پردازش تصویر"
-    result = reader.readtext(processed, detail=0, paragraph=True)
-    text = " ".join(result)
-    text = normalizer.normalize(text)
-    matches = tool.check(text)
-    text = language_tool_python.utils.correct(text, matches)
-    return text
-
-# =============================
-#        Telegram Bot
-# =============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام 👋\nفایل PDF یا تصویر را ارسال کنید تا متن استخراج شود.")
+    await update.message.reply_text("✅ ربات OCR فارسی فعال است!\nلطفاً فایل PDF یا عکس ارسال کنید.")
+
+def preprocess_image(image_path):
+    """پیش‌پردازش تصویر برای دقت بالاتر OCR"""
+    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.medianBlur(gray, 3)
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 2)
+    return thresh
+
+def perform_ocr(image_path):
+    processed = preprocess_image(image_path)
+    temp_path = tempfile.mktemp(suffix=".png")
+    cv2.imwrite(temp_path, processed)
+    result = reader.readtext(temp_path, detail=0)
+    text = "\n".join(result)
+    return normalizer.normalize(text)
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.document.get_file() if update.message.document else await update.message.photo[-1].get_file()
-    file_path = f"temp_{file.file_unique_id}.pdf" if file.file_path.endswith('.pdf') else f"temp_{file.file_unique_id}.jpg"
+    file_path = f"temp_{update.message.from_user.id}.pdf"
     await file.download_to_drive(file_path)
 
+    extracted_text = ""
+
     if file_path.endswith(".pdf"):
-        text = extract_text_from_pdf(file_path)
+        images = convert_from_path(file_path)
+        for img in images:
+            temp_img = tempfile.mktemp(suffix=".png")
+            img.save(temp_img, "PNG")
+            extracted_text += perform_ocr(temp_img) + "\n"
     else:
-        text = extract_text_from_image(file_path)
+        extracted_text = perform_ocr(file_path)
 
-    os.remove(file_path)
-
-    if len(text) > 4000:
-        for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000])
+    if not extracted_text.strip():
+        await update.message.reply_text("❌ متنی شناسایی نشد. لطفاً فایل واضح‌تر بفرستید.")
     else:
-        await update.message.reply_text(text or "❌ متنی شناسایی نشد.")
+        await update.message.reply_text(f"📄 متن استخراج‌شده:\n\n{extracted_text}")
 
 def main():
-    app_token = os.getenv("BOT_TOKEN")
-    application = ApplicationBuilder().token(app_token).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
-    application.run_polling()
+    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_tg.add_handler(CommandHandler("start", start))
+    app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
+
+    import threading
+    threading.Thread(target=lambda: app_tg.run_polling(allowed_updates=Update.ALL_TYPES)).start()
+
+    app.run(host="0.0.0.0", port=8080)
 
 if __name__ == "__main__":
-    from threading import Thread
-    Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
     main()
