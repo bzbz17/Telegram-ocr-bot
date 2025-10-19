@@ -1,12 +1,9 @@
 python-telegram-bot==20.7
 pytesseract==0.3.13
 pdf2image==1.17.0
-pdfplumber==0.8.0
-python-docx==0.8.11
 Pillow==10.4.0
-opencv-python-headless==4.8.1.78
-numpy<2
-hazm==0.7.0
-parsivar==0.2.3
-easyocr==1.7.1
 flask==3.0.3
+PyMuPDF==1.24.6
+opencv-python-headless==4.8.1.78
+hazm==0.7.0
+nltk==3.3
