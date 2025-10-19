@@ -3,9 +3,8 @@ services:
     name: telegram-ocr-bot
     env: python
     plan: free
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: POPPLER_PATH
-        value: /usr/bin
