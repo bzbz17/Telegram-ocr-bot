@@ -1,27 +1,25 @@
 import os
 import tempfile
 import logging
-import threading
 import asyncio
 from pathlib import Path
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
 import pytesseract
 from PIL import Image
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 
-# -------------------------------------
+# ===========================
 # تنظیمات اولیه
-# -------------------------------------
+# ===========================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POPPLER_PATH = os.environ.get("POPPLER_PATH", "/usr/bin")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask برای UptimeRobot
 app = Flask(__name__)
 
 @app.route("/")
@@ -29,11 +27,10 @@ def home():
     return "✅ Telegram OCR Bot is running!"
 
 
-# -------------------------------------
+# ===========================
 # توابع OCR
-# -------------------------------------
+# ===========================
 def extract_text_from_pdf(pdf_path: str) -> str:
-    """تلاش برای استخراج مستقیم متن دیجیتال از PDF"""
     text = ""
     try:
         with fitz.open(pdf_path) as doc:
@@ -47,7 +44,6 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 
 def ocr_pdf(pdf_path: str) -> str:
-    """اگر متن دیجیتال نباشد، OCR انجام می‌شود"""
     text_result = []
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
@@ -60,7 +56,6 @@ def ocr_pdf(pdf_path: str) -> str:
 
 
 def ocr_image(image_path: str) -> str:
-    """استخراج متن از تصویر"""
     try:
         img = Image.open(image_path)
         return pytesseract.image_to_string(img, lang="fas+eng+ara", config="--psm 6").strip()
@@ -69,9 +64,9 @@ def ocr_image(image_path: str) -> str:
         return ""
 
 
-# -------------------------------------
-# هندلرهای تلگرام
-# -------------------------------------
+# ===========================
+# Telegram Bot handlers
+# ===========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
@@ -130,17 +125,18 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Path(tmp_dir).rmdir()
 
 
-# -------------------------------------
-# راه‌اندازی تلگرام و Flask با هم
-# -------------------------------------
-def run_bot():
-    asyncio.set_event_loop(asyncio.new_event_loop())
+# ===========================
+# اجرای همزمان Flask + Bot
+# ===========================
+async def start_bot():
     app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
-    app_tg.run_polling(allowed_updates=Update.ALL_TYPES)
+    await app_tg.run_polling(stop_signals=None, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
+    # اجرای هم‌زمان Flask و Bot در یک event loop
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_bot())
     app.run(host="0.0.0.0", port=8080)
