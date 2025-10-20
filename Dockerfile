@@ -1,14 +1,14 @@
-# Base image
+# ==========================
+# Base Image
+# ==========================
 FROM python:3.10-slim
 
-# Prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
+# ==========================
+# Install System Dependencies
+# ==========================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    tesseract-ocr-fas \
-    tesseract-ocr-ara \
+    libtesseract-dev \
     libgl1 \
     poppler-utils \
     ghostscript \
@@ -16,19 +16,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
+# ==========================
 # Copy project files
+# ==========================
+WORKDIR /app
 COPY . /app
 
-# Install Python dependencies
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+# ==========================
+# Install Python Dependencies
+# ==========================
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir \
+    opencv-python-headless \
+    pytesseract \
+    pdf2image \
+    PyMuPDF \
+    flask \
+    python-telegram-bot \
+    hazm \
+    numpy \
+    pillow \
+    easyocr
 
-# Expose Flask port
-EXPOSE 8080
+# ==========================
+# OCR Language Data
+# ==========================
+RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata && \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/fas.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/fas.traineddata && \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/ara.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/ara.traineddata && \
+    wget -q -O /usr/share/tesseract-ocr/4.00/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata
 
-# Start both Flask (uptime) and Bot with Supervisor
+# ==========================
+# Supervisor Config
+# ==========================
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-CMD ["/usr/bin/supervisord"]
+# ==========================
+# Expose Flask Port
+# ==========================
+EXPOSE 8080
+
+# ==========================
+# Run Supervisor (starts Flask + Bot)
+# ==========================
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
