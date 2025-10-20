@@ -2,11 +2,11 @@ services:
   - type: web
     name: telegram-ocr-bot
     env: python
-    region: oregon
     plan: free
     buildCommand: ""
-    startCommand: "/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"
+    startCommand: python3 bot.py
     envVars:
       - key: BOT_TOKEN
         sync: false
-    healthCheckPath: /
+      - key: POPPLER_PATH
+        value: /usr/bin
