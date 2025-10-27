@@ -24,13 +24,14 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Telegram OCR Bot is running!"
+    return "✅ Telegram OCR Bot is alive and running!"
 
 
 # ===========================
 # توابع OCR
 # ===========================
 def extract_text_from_pdf(pdf_path: str) -> str:
+    """استخراج مستقیم متن از PDF اگر قابل انتخاب باشد"""
     text = ""
     try:
         with fitz.open(pdf_path) as doc:
@@ -44,6 +45,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 
 def ocr_pdf(pdf_path: str) -> str:
+    """OCR برای صفحات PDF تصویری"""
     text_result = []
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
@@ -56,6 +58,7 @@ def ocr_pdf(pdf_path: str) -> str:
 
 
 def ocr_image(image_path: str) -> str:
+    """OCR برای تصویر"""
     try:
         img = Image.open(image_path)
         return pytesseract.image_to_string(img, lang="fas+eng+ara", config="--psm 6").strip()
@@ -70,8 +73,8 @@ def ocr_image(image_path: str) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n"
-        "من ربات استخراج متن هستم.\n"
-        "📄 فقط فایل PDF یا عکس بفرست تا متنش رو برات استخراج کنم ✅"
+        "من ربات OCR فارسی هستم.\n"
+        "📄 لطفاً فایل PDF یا عکس بفرست تا متنش رو برات استخراج کنم ✅"
     )
 
 
@@ -102,7 +105,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await telegram_file.download_to_drive(custom_path=local_path)
         await message.reply_text("⏳ در حال پردازش فایل...")
 
-        # تشخیص نوع فایل
         if file_name.lower().endswith(".pdf"):
             text = extract_text_from_pdf(local_path)
             if not text.strip():
@@ -126,17 +128,23 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ===========================
-# اجرای همزمان Flask + Bot
+# اجرای همزمان Flask و Bot
 # ===========================
-async def start_bot():
+async def run_bot():
     app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
     await app_tg.run_polling(stop_signals=None, allowed_updates=Update.ALL_TYPES)
 
 
-if __name__ == "__main__":
-    # اجرای هم‌زمان Flask و Bot در یک event loop
+async def run_flask():
     loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-    app.run(host="0.0.0.0", port=8080)
+    await loop.run_in_executor(None, lambda: app.run(host="0.0.0.0", port=8080))
+
+
+async def main():
+    await asyncio.gather(run_flask(), run_bot())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
