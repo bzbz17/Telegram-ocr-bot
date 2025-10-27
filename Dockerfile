@@ -1,13 +1,7 @@
-# --------------------------
-#   Telegram OCR Bot (Render)
-# --------------------------
-
 FROM python:3.10-slim
 
-# جلوگیری از بافر لاگ
 ENV PYTHONUNBUFFERED=1
 
-# نصب وابستگی‌های سیستمی
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-fas \
@@ -19,17 +13,15 @@ RUN apt-get update && apt-get install -y \
     supervisor \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# تنظیم دایرکتوری کاری
 WORKDIR /app
 
-# کپی فایل‌های پروژه
 COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir -r requirements.txt \
+ && python -m nltk.downloader punkt
 
 COPY . .
 
-# پورت Flask
 EXPOSE 8080
 
-# اجرای supervisor
 CMD ["supervisord", "-c", "/app/supervisord.conf"]
