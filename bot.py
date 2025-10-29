@@ -2,15 +2,15 @@ import os
 import tempfile
 import logging
 from pathlib import Path
-from typing import Optional
 import re
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import pytesseract
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
-from concurrent.futures import ThreadPoolExecutor
+from flask import Flask
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -23,50 +23,46 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POPPLER_PATH = os.environ.get("POPPLER_PATH", "/usr/bin")
-
-# تعداد نخ‌ها برای پردازش صفحات PDF (برای سرعت)
 MAX_WORKERS = int(os.environ.get("OCR_MAX_WORKERS", "4"))
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-# تنظیمات Tesseract برای دقت بهتر فارسی
 OCR_CONFIG = "--oem 3 --psm 6 -c preserve_interword_spaces=1"
 
 # -----------------------
-# توابع کمکی برای بهبود تصویر (برای دقت OCR)
+# Flask برای uptimerobot
+# -----------------------
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "🤖 Telegram OCR Bot is Alive!", 200
+
+# -----------------------
+# پیش‌پردازش تصویر
 # -----------------------
 def preprocess_pil_image(img: Image.Image) -> Image.Image:
-    """پیش‌پردازش تصویر برای بهبود دقت OCR"""
     try:
-        # تبدیل به خاکستری
         img = img.convert("L")
-
-        # افزایش اندازه اگر خیلی کوچک باشه (افزایش دقت)
         target_w = 1600
         if img.width < target_w:
             ratio = target_w / float(img.width)
             new_h = int(img.height * ratio)
             img = img.resize((target_w, new_h), Image.Resampling.BICUBIC)
-
-        # کاهش نویز و افزایش کنتراست و تیزی
         img = img.filter(ImageFilter.MedianFilter(size=3))
         img = ImageOps.autocontrast(img, cutoff=1)
         enhancer = ImageEnhance.Sharpness(img)
         img = enhancer.enhance(1.5)
-
-        # آستانه (اختیاری — کمک می‌کند حروف واضح‌تر شوند)
-        # مقدار آستانه را روی 127 قرار می‌دهیم؛ اگر نیاز بود می‌توان آن را تغییر داد.
         img = img.point(lambda p: 255 if p > 127 else 0)
-
         return img
     except Exception as e:
-        logger.exception(f"preprocess error: {e}")
+        logger.error(f"preprocess error: {e}")
         return img
 
-
+# -----------------------
+# تشخیص زبان تصویر
+# -----------------------
 def detect_language_from_image(image: Image.Image) -> str:
-    """تشخیص زبان غالب تصویر (فارسی/انگلیسی/ترکیبی)"""
     try:
-        # نمونه‌برداری سریع با اندازه کوچک و psm سریع
         sample = image.copy()
         sample.thumbnail((800, 800))
         text_sample = pytesseract.image_to_string(sample, lang="fas+eng", config="--psm 6")
@@ -78,16 +74,13 @@ def detect_language_from_image(image: Image.Image) -> str:
             return "eng"
         else:
             return "fas+eng"
-    except Exception as e:
-        logger.error(f"language detect error: {e}")
+    except Exception:
         return "fas+eng"
 
-
 # -----------------------
-# استخراج متن
+# استخراج متن PDF دیجیتال
 # -----------------------
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
-    """استخراج متن digital (selectable) از PDF با PyMuPDF"""
     texts = []
     try:
         with fitz.open(pdf_path) as doc:
@@ -96,152 +89,143 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
                 if txt:
                     texts.append(txt)
     except Exception as e:
-        logger.exception(f"PDF digital extraction error: {e}")
+        logger.error(f"PDF text extract error: {e}")
     return "\n\n".join(texts).strip()
 
-
+# -----------------------
+# OCR تصویر
+# -----------------------
 def ocr_image_with_lang(img: Image.Image, lang: str) -> str:
-    """اجرای OCR روی تصویر (پیش‌پردازش + pytesseract)"""
     try:
         pre = preprocess_pil_image(img)
         return pytesseract.image_to_string(pre, lang=lang, config=OCR_CONFIG).strip()
     except Exception as e:
-        logger.exception(f"OCR image error: {e}")
+        logger.error(f"OCR error: {e}")
         return ""
 
-
-def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
-    """تبدیل PDF به تصاویر و اجرای OCR (چندنخی برای سرعت)"""
+# -----------------------
+# OCR PDF چندصفحه‌ای
+# -----------------------
+def ocr_pdf_to_text(pdf_path: str, poppler_path=None) -> str:
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
     except Exception as e:
-        logger.exception(f"pdf->image error: {e}")
+        logger.error(f"PDF->image error: {e}")
         return ""
 
-    # تابع پردازش یک صفحه
     def process_page(img):
-        try:
-            lang = detect_language_from_image(img)
-            return ocr_image_with_lang(img, lang)
-        except Exception as e:
-            logger.exception(f"page process error: {e}")
-            return ""
+        lang = detect_language_from_image(img)
+        return ocr_image_with_lang(img, lang)
 
-    # پردازش چندنخی صفحات (حفظ ترتیب)
-    futures = [executor.submit(process_page, img.copy()) for img in images]
-    results = [f.result() for f in futures]
-    texts = [r for r in results if r]
-    return "\n\n".join(texts).strip()
-
+    futures = [executor.submit(process_page, img) for img in images]
+    return "\n\n".join([f.result() for f in futures if f.result()])
 
 # -----------------------
-# حذف webhook قبلی (کاهش احتمال conflict)
+# نرمال‌سازی و تصحیح فارسی
+# -----------------------
+try:
+    from hazm import Normalizer, WordTokenizer, POSTagger, Lemmatizer, SpellChecker
+    normalizer = Normalizer()
+    spell = SpellChecker()
+    def normalize_text(text: str) -> str:
+        text = normalizer.normalize(text)
+        corrected = []
+        for word in text.split():
+            corrected.append(spell.correct(word))
+        return " ".join(corrected)
+except Exception:
+    def normalize_text(text: str) -> str:
+        return text.strip()
+
+# -----------------------
+# حذف webhook قبلی
 # -----------------------
 def ensure_delete_webhook(token: str):
     try:
-        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
-        urllib.request.urlopen(url, timeout=10)
-        logger.info("deleteWebhook called (if any webhook existed).")
+        urllib.request.urlopen(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=10)
     except Exception:
-        # بی‌خیال می‌شویم اگر خطا بده — فقط تلاش کردیم
         pass
 
-
 # -----------------------
-# هندل پیام‌ها
+# هندل فایل‌ها
 # -----------------------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message:
+    msg = update.message
+    if not msg:
         return
 
-    # تشخیص فایل یا عکس
-    if message.document:
-        file_id = message.document.file_id
-        file_name = message.document.file_name or "file.pdf"
-    elif message.photo:
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        file_name = f"{photo.file_unique_id}.jpg"
+    if msg.document:
+        file_id = msg.document.file_id
+        file_name = msg.document.file_name or "file.pdf"
+    elif msg.photo:
+        file_id = msg.photo[-1].file_id
+        file_name = f"{msg.photo[-1].file_unique_id}.jpg"
     else:
-        await message.reply_text("📄 لطفاً یک فایل PDF یا تصویر ارسال کنید.")
+        await msg.reply_text("📎 لطفاً فایل PDF یا تصویر بفرست.")
         return
 
     tmp_dir = tempfile.mkdtemp()
     local_path = os.path.join(tmp_dir, file_name)
 
     try:
-        # دانلود فایل از تلگرام
         tg_file = await context.bot.get_file(file_id)
         await tg_file.download_to_drive(custom_path=local_path)
 
-        # استخراج متن: در ابتدا تلاش برای متن دیجیتال PDF
         text = ""
         if file_name.lower().endswith(".pdf"):
-            await message.reply_text("📑 در حال استخراج متن از PDF ...")
+            await msg.reply_text("📑 در حال استخراج متن از PDF ...")
             text = extract_text_from_pdf_digital(local_path)
             if not text.strip():
-                await message.reply_text("🔍 متن دیجیتال یافت نشد؛ اجرای OCR (چندصفحه‌ای) ...")
+                await msg.reply_text("🔍 متن دیجیتال یافت نشد؛ اجرای OCR ...")
                 text = ocr_pdf_to_text(local_path, poppler_path=POPPLER_PATH)
         else:
-            await message.reply_text("🖼️ در حال پردازش تصویر و اجرای OCR ...")
+            await msg.reply_text("🖼️ در حال اجرای OCR روی تصویر ...")
             img = Image.open(local_path)
             lang = detect_language_from_image(img)
             text = ocr_image_with_lang(img, lang)
 
         if not text.strip():
-            await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
+            await msg.reply_text("⚠️ هیچ متنی یافت نشد.")
             return
 
-        # ارسال متن کامل داخل چت (تقسیم به قطعات امن برای تلگرام)
-        max_len = 3900
-        # حذف فضاهای اضافی و کاراکترهای نامرغوب در ابتدا/انتها
-        text = text.strip()
-        for i in range(0, len(text), max_len):
-            await message.reply_text(text[i:i + max_len])
+        text = normalize_text(text)
+        chunks = [text[i:i+3900] for i in range(0, len(text), 3900)]
+        for chunk in chunks:
+            await msg.reply_text(chunk)
 
-        await message.reply_text("✅ استخراج متن با موفقیت انجام شد.")
+        await msg.reply_text("✅ پردازش کامل شد.")
     except Exception as e:
-        logger.exception(f"Error processing file: {e}")
-        await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
+        await msg.reply_text(f"❌ خطا: {e}")
     finally:
-        # پاکسازی موقت
+        for f in Path(tmp_dir).glob("*"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
         try:
-            for f in Path(tmp_dir).glob("*"):
-                f.unlink(missing_ok=True)
             Path(tmp_dir).rmdir()
         except Exception:
             pass
 
-
 # -----------------------
-# فرمان استارت
+# دستور /start
 # -----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 سلام!\n"
-        "من ربات استخراج متن هوشمند هستم.\n\n"
-        "📄 یک PDF یا تصویر بفرست تا متن (فارسی/انگلیسی) رو مستقیم داخل چت برات ارسال کنم."
-    )
-
+    await update.message.reply_text("👋 سلام! من ربات OCR فارسی هستم.\nفقط یه عکس یا PDF بفرست تا متنش رو تحویلت بدم ✨")
 
 # -----------------------
-# اجرا (main)
+# اجرای همزمان Flask و Bot
 # -----------------------
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("❌ BOT_TOKEN is missing!")
-
-    # تلاش برای حذف هر webhook قبلی (کاهش خطر conflict)
     ensure_delete_webhook(BOT_TOKEN)
+    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_tg.add_handler(CommandHandler("start", start_cmd))
+    app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
-
-    logger.info("🤖 Bot started and waiting for files...")
-    app.run_polling()
-
+    # اجرای همزمان Flask و Telegram
+    import threading
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
+    app_tg.run_polling()
 
 if __name__ == "__main__":
     main()
