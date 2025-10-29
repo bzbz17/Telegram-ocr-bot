@@ -2,22 +2,21 @@ import os
 import tempfile
 import logging
 from pathlib import Path
+from typing import Optional
 import re
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from flask import Flask
 
 import pytesseract
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
-from flask import Flask
-
+from concurrent.futures import ThreadPoolExecutor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# -----------------------
-# تنظیمات و لاگ
-# -----------------------
+# ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,18 +27,18 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 OCR_CONFIG = "--oem 3 --psm 6 -c preserve_interword_spaces=1"
 
-# -----------------------
-# Flask برای uptimerobot
-# -----------------------
-flask_app = Flask(__name__)
+# ---------- Flask Keepalive ----------
+app = Flask(__name__)
 
-@flask_app.route("/")
+@app.route("/")
 def home():
-    return "🤖 Telegram OCR Bot is Alive!", 200
+    return "🤖 Bot is alive!"
 
-# -----------------------
-# پیش‌پردازش تصویر
-# -----------------------
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# ---------- Image Preprocessing ----------
 def preprocess_pil_image(img: Image.Image) -> Image.Image:
     try:
         img = img.convert("L")
@@ -55,12 +54,10 @@ def preprocess_pil_image(img: Image.Image) -> Image.Image:
         img = img.point(lambda p: 255 if p > 127 else 0)
         return img
     except Exception as e:
-        logger.error(f"preprocess error: {e}")
+        logger.exception(f"preprocess error: {e}")
         return img
 
-# -----------------------
-# تشخیص زبان تصویر
-# -----------------------
+# ---------- Language Detection ----------
 def detect_language_from_image(image: Image.Image) -> str:
     try:
         sample = image.copy()
@@ -74,12 +71,11 @@ def detect_language_from_image(image: Image.Image) -> str:
             return "eng"
         else:
             return "fas+eng"
-    except Exception:
+    except Exception as e:
+        logger.error(f"language detect error: {e}")
         return "fas+eng"
 
-# -----------------------
-# استخراج متن PDF دیجیتال
-# -----------------------
+# ---------- OCR Processing ----------
 def extract_text_from_pdf_digital(pdf_path: str) -> str:
     texts = []
     try:
@@ -89,142 +85,112 @@ def extract_text_from_pdf_digital(pdf_path: str) -> str:
                 if txt:
                     texts.append(txt)
     except Exception as e:
-        logger.error(f"PDF text extract error: {e}")
+        logger.exception(f"PDF digital extraction error: {e}")
     return "\n\n".join(texts).strip()
 
-# -----------------------
-# OCR تصویر
-# -----------------------
 def ocr_image_with_lang(img: Image.Image, lang: str) -> str:
     try:
         pre = preprocess_pil_image(img)
         return pytesseract.image_to_string(pre, lang=lang, config=OCR_CONFIG).strip()
     except Exception as e:
-        logger.error(f"OCR error: {e}")
+        logger.exception(f"OCR image error: {e}")
         return ""
 
-# -----------------------
-# OCR PDF چندصفحه‌ای
-# -----------------------
-def ocr_pdf_to_text(pdf_path: str, poppler_path=None) -> str:
+def ocr_pdf_to_text(pdf_path: str, poppler_path: Optional[str] = None) -> str:
     try:
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
     except Exception as e:
-        logger.error(f"PDF->image error: {e}")
+        logger.exception(f"pdf->image error: {e}")
         return ""
-
     def process_page(img):
-        lang = detect_language_from_image(img)
-        return ocr_image_with_lang(img, lang)
+        try:
+            lang = detect_language_from_image(img)
+            return ocr_image_with_lang(img, lang)
+        except Exception as e:
+            logger.exception(f"page process error: {e}")
+            return ""
+    futures = [executor.submit(process_page, img.copy()) for img in images]
+    results = [f.result() for f in futures]
+    texts = [r for r in results if r]
+    return "\n\n".join(texts).strip()
 
-    futures = [executor.submit(process_page, img) for img in images]
-    return "\n\n".join([f.result() for f in futures if f.result()])
-
-# -----------------------
-# نرمال‌سازی و تصحیح فارسی
-# -----------------------
-try:
-    from hazm import Normalizer, WordTokenizer, POSTagger, Lemmatizer, SpellChecker
-    normalizer = Normalizer()
-    spell = SpellChecker()
-    def normalize_text(text: str) -> str:
-        text = normalizer.normalize(text)
-        corrected = []
-        for word in text.split():
-            corrected.append(spell.correct(word))
-        return " ".join(corrected)
-except Exception:
-    def normalize_text(text: str) -> str:
-        return text.strip()
-
-# -----------------------
-# حذف webhook قبلی
-# -----------------------
 def ensure_delete_webhook(token: str):
     try:
-        urllib.request.urlopen(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=10)
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+        urllib.request.urlopen(url, timeout=10)
     except Exception:
         pass
 
-# -----------------------
-# هندل فایل‌ها
-# -----------------------
+# ---------- Telegram Handlers ----------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg:
+    message = update.message
+    if not message:
         return
-
-    if msg.document:
-        file_id = msg.document.file_id
-        file_name = msg.document.file_name or "file.pdf"
-    elif msg.photo:
-        file_id = msg.photo[-1].file_id
-        file_name = f"{msg.photo[-1].file_unique_id}.jpg"
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name or "file.pdf"
+    elif message.photo:
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        file_name = f"{photo.file_unique_id}.jpg"
     else:
-        await msg.reply_text("📎 لطفاً فایل PDF یا تصویر بفرست.")
+        await message.reply_text("📄 لطفاً یک فایل PDF یا تصویر ارسال کنید.")
         return
 
     tmp_dir = tempfile.mkdtemp()
     local_path = os.path.join(tmp_dir, file_name)
-
     try:
         tg_file = await context.bot.get_file(file_id)
         await tg_file.download_to_drive(custom_path=local_path)
-
         text = ""
         if file_name.lower().endswith(".pdf"):
-            await msg.reply_text("📑 در حال استخراج متن از PDF ...")
+            await message.reply_text("📑 در حال استخراج متن از PDF ...")
             text = extract_text_from_pdf_digital(local_path)
             if not text.strip():
-                await msg.reply_text("🔍 متن دیجیتال یافت نشد؛ اجرای OCR ...")
+                await message.reply_text("🔍 اجرای OCR روی صفحات ...")
                 text = ocr_pdf_to_text(local_path, poppler_path=POPPLER_PATH)
         else:
-            await msg.reply_text("🖼️ در حال اجرای OCR روی تصویر ...")
+            await message.reply_text("🖼️ در حال اجرای OCR روی تصویر ...")
             img = Image.open(local_path)
             lang = detect_language_from_image(img)
             text = ocr_image_with_lang(img, lang)
-
         if not text.strip():
-            await msg.reply_text("⚠️ هیچ متنی یافت نشد.")
+            await message.reply_text("⚠️ هیچ متنی قابل استخراج نبود.")
             return
-
-        text = normalize_text(text)
-        chunks = [text[i:i+3900] for i in range(0, len(text), 3900)]
-        for chunk in chunks:
-            await msg.reply_text(chunk)
-
-        await msg.reply_text("✅ پردازش کامل شد.")
+        text = text.strip()
+        max_len = 3900
+        for i in range(0, len(text), max_len):
+            await message.reply_text(text[i:i + max_len])
+        await message.reply_text("✅ استخراج متن با موفقیت انجام شد.")
     except Exception as e:
-        await msg.reply_text(f"❌ خطا: {e}")
+        logger.exception(f"Error processing file: {e}")
+        await message.reply_text(f"❌ خطا در پردازش فایل: {str(e)}")
     finally:
-        for f in Path(tmp_dir).glob("*"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
         try:
+            for f in Path(tmp_dir).glob("*"):
+                f.unlink(missing_ok=True)
             Path(tmp_dir).rmdir()
         except Exception:
             pass
 
-# -----------------------
-# دستور /start
-# -----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 سلام! من ربات OCR فارسی هستم.\nفقط یه عکس یا PDF بفرست تا متنش رو تحویلت بدم ✨")
+    await update.message.reply_text(
+        "👋 سلام!\n"
+        "من ربات OCR هستم.\n"
+        "📄 یک PDF یا عکس بفرست تا متنش رو برات استخراج کنم."
+    )
 
-# -----------------------
-# اجرای همزمان Flask و Bot
-# -----------------------
+# ---------- Main ----------
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("❌ BOT_TOKEN is missing!")
+
     ensure_delete_webhook(BOT_TOKEN)
     app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start_cmd))
     app_tg.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    # اجرای همزمان Flask و Telegram
-    import threading
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
+    threading.Thread(target=run_flask, daemon=True).start()
     app_tg.run_polling()
 
 if __name__ == "__main__":
